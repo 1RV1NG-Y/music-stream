@@ -1,5 +1,9 @@
 //! A device's view of one synchronized library: storage, pairing, and live sync sessions.
 
+mod stream;
+
+pub use stream::{IndexReply, ReadEvent, ReadStream};
+
 use std::{
     collections::{HashMap, HashSet},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -176,6 +180,9 @@ struct Inner {
     backoff: Mutex<HashMap<EndpointId, (Instant, Duration)>>,
     errors: Mutex<HashMap<EndpointId, String>>,
     invites: Mutex<Vec<PendingInvite>>,
+    /// The music library this device serves, if it owns one (the phone).
+    library: OnceLock<Arc<crate::library::Library>>,
+    rescan_now: Notify,
     next_token: AtomicU64,
     wake: Notify,
     closing: watch::Sender<bool>,
@@ -277,6 +284,8 @@ impl Node {
             backoff: Mutex::default(),
             errors: Mutex::default(),
             invites: Mutex::default(),
+            library: OnceLock::new(),
+            rescan_now: Notify::new(),
             next_token: AtomicU64::new(1),
             wake: Notify::new(),
             closing: watch::channel(false).0,
@@ -721,13 +730,16 @@ impl Node {
                 }
             }
         };
-        // Every further stream on this connection is a stream request (PLAN.md §5). Until
-        // the stream protocol lands (M1), they are refused by dropping them.
+        // Every further stream on this connection is a stream request (PLAN.md §5).
         let file_requests = async {
             loop {
                 let (send, recv) = conn.accept_bi().await?;
-                tracing::debug!(%peer, "stream request refused: not implemented yet");
-                drop((send, recv));
+                let node = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = node.serve_stream(send, recv).await {
+                        tracing::debug!(%peer, "stream request: {e:#}");
+                    }
+                });
             }
             #[allow(unreachable_code)]
             anyhow::Ok(())

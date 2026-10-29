@@ -24,6 +24,36 @@ pub enum SyncMsg {
     Reject { reason: String },
 }
 
+/// Size of a streamed block (PLAN.md §5–§6).
+pub const BLOCK: u64 = 256 * 1024;
+
+/// Requests on extra streams of an established sync connection, so only paired devices can
+/// ask (PLAN.md §5). One request per stream; the requester finishes its side after it.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum StreamReq {
+    /// The library index, unless the requester already has the one with this hash.
+    Index { have: Option<[u8; 32]> },
+    /// Bytes `start..end` of a track, as it was at `rev`.
+    Read { track: [u8; 16], rev: u64, start: u64, end: u64 },
+    Art { hash: [u8; 32] },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum StreamResp {
+    Same,
+    /// Followed by `len` bytes of the compressed index.
+    Snapshot { hash: [u8; 32], len: u64 },
+    /// Followed by `len` bytes.
+    Have { len: u64 },
+    /// Followed by `len` bytes of the track at `offset`, verified to be the requested rev.
+    Block { offset: u64, len: u32 },
+    End,
+    /// The file is no longer at the requested rev (`rev` 0: not known yet; refresh the index).
+    Changed { rev: u64, size: u64 },
+    Missing,
+    Refused { reason: String },
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PairMsg {
     /// Scanner of a `Join` code asks to join the code owner's library.

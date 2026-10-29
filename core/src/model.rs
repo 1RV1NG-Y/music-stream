@@ -2,6 +2,8 @@
 //!
 //! - `settings`: setting name → JSON value, last-writer-wins.
 //! - `devices` holds membership; `addresses` each device's current LAN addresses.
+//! - `library`: `head` → hex hash of the served library's current index, written by the
+//!   device that serves it after a rescan, so other devices know to fetch it again.
 //!
 //! Playlists and favorites (`TrackRef`s, PLAN.md §3–§4) are added with the library.
 
@@ -14,6 +16,7 @@ pub const SETTINGS: &str = "settings";
 pub const DEVICES: &str = "devices";
 /// Map of endpoint id → JSON list of socket addresses, written only by that device.
 pub const ADDRESSES: &str = "addresses";
+pub const LIBRARY: &str = "library";
 
 const MAX_SETTINGS: usize = 100;
 const MAX_SETTING_JSON: usize = 1024;
@@ -106,6 +109,24 @@ pub fn write_addresses(doc: &LoroDoc, id: &str, addrs: &[std::net::SocketAddr]) 
         return Ok(false);
     }
     doc.get_map(ADDRESSES).insert(id, serde_json::to_string(&addrs)?)?;
+    Ok(true)
+}
+
+// ---- Library head -------------------------------------------------------------------------
+
+pub fn read_library_head(doc: &LoroDoc) -> Option<String> {
+    match doc.get_map(LIBRARY).get("head") {
+        Some(ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// Returns whether it changed. The caller commits.
+pub fn write_library_head(doc: &LoroDoc, hash: &str) -> Result<bool> {
+    if read_library_head(doc).as_deref() == Some(hash) {
+        return Ok(false);
+    }
+    doc.get_map(LIBRARY).insert("head", hash)?;
     Ok(true)
 }
 

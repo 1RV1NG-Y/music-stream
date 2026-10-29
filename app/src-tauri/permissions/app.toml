@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-library"
+description = "Use the core: devices and settings (rpc), and the music library and player (music)."
+commands.allow = ["rpc", "music", "android_sync_controls"]
+
+[[permission]]
+identifier = "allow-background"
+description = "Desktop: whether closing the window keeps the app running in the tray, and starting at login."
+commands.allow = ["keeps_running_in_background", "start_at_login", "set_start_at_login"]

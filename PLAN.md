@@ -410,6 +410,19 @@ and "Ready" otherwise.
 All code is the real app; no throwaway prototypes. Order: M0 (measure) → M1 (first sound, the
 thinnest real path through every layer) → Tracks A, B, C widen it → I1 → D.
 
+**Reordered 2026-10-29 (user):** something usable comes first. **U1, usable build:** the
+phone scans and serves its library, and the PC browses it (albums, tracks, art), plays a
+queue with seek, pause, next/previous and volume, and pairs. It is built on the real
+protocol and pipeline, cut down where noted:
+- The track cache starts as whole-track files plus in-memory blocks for the track being
+  fetched; segment files, pinning and crash-safe block maps (§6) follow in Track B.
+- The scan walks the shared storage folders directly (`/storage/emulated/0`, skipping
+  `Android/`); MediaStore change notifications and SD cards follow in Track A.
+- Playlists, favorites, shuffle and repeat follow in D.
+
+M0's measurements (baseline, Doze throughput, long idle, battery) wait until after U1. The
+FUSE gate (step 3) is done.
+
 ### M0 — measurements first (a few days, mostly waiting)
 
 1. **Baseline:** from opening VLC to music playing with BubbleUPnP + VLC, phone locked in a

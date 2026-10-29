@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#000"/>
+  <!-- A phone-to-PC stream: two arcs of signal around a note. -->
+  <path d="M154 150a150 150 0 0 0 0 212M358 150a150 150 0 0 1 0 212" fill="none" stroke="#ff7a1a" stroke-width="22" stroke-linecap="round" opacity=".45"/>
+  <path d="M196 192a92 92 0 0 0 0 128M316 192a92 92 0 0 1 0 128" fill="none" stroke="#ff7a1a" stroke-width="22" stroke-linecap="round" opacity=".75"/>
+  <path d="M276 168v126a38 38 0 1 1-24-35.3V182l64-14v30z" fill="#ff7a1a"/>
+</svg>
