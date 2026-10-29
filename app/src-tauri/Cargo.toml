@@ -8,7 +8,7 @@ publish = false
 
 [lib]
 name = "music_stream_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

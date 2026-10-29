@@ -163,3 +163,53 @@ async fn a_changed_file_is_refused_and_a_stalled_read_can_be_interrupted() {
     assert_eq!(kind, musicstream_core::remote::INTERRUPTED);
     pc.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn constant_seeking_never_breaks_a_read() {
+    let dirs: Vec<_> = (0..4).map(|_| tempfile::tempdir().unwrap()).collect();
+    let music = dirs[3].path();
+    write_flac(&music.join("long.flac"), "Long", 12_000_000, 5);
+    let phone = open(dirs[0].path(), "Phone", "android").await;
+    phone.serve_library(Arc::new(Library::open(dirs[0].path().join("music"), vec![Root { volume: "v".into(), path: music.to_owned() }]).unwrap()));
+    let pc = open(dirs[1].path(), "PC", "linux").await;
+    pc.use_code(&phone.create_invite().unwrap().ticket).await.unwrap();
+    let remote = Remote::open(pc.clone(), dirs[2].path().to_owned()).unwrap();
+    wait_for("index arrives", || remote.index().tracks.len() == 1).await;
+    let track = remote.index().tracks[0].clone();
+    let source = std::fs::read(music.join("long.flac")).unwrap();
+    let source = Arc::new(source);
+
+    // Playback reads straight through while a second reader seeks every few milliseconds, so
+    // the fetcher is woken again and again while blocks are arriving.
+    let run = |seeking: bool| {
+        let (remote, track, source) = (remote.clone(), track.clone(), source.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut s = remote.open_track(&track, Arc::new(AtomicBool::new(false))).unwrap();
+            let mut buf = vec![0; 3000];
+            let mut x: u64 = 7;
+            let started = std::time::Instant::now();
+            let mut pos = 0u64;
+            while started.elapsed() < Duration::from_secs(4) && pos + 3000 < track.size() {
+                if seeking {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    pos = (x >> 33) % (track.size() - 3000);
+                    s.seek(SeekFrom::Start(pos)).unwrap();
+                    std::thread::sleep(Duration::from_millis(3));
+                }
+                let t = std::time::Instant::now();
+                s.read_exact(&mut buf).unwrap();
+                assert!(t.elapsed() < Duration::from_secs(2), "a read took {:?}", t.elapsed());
+                assert_eq!(buf[..], source[pos as usize..pos as usize + 3000], "bytes at {pos}");
+                if !seeking {
+                    pos += 3000;
+                }
+            }
+        })
+    };
+    let (a, b) = (run(false), run(true));
+    a.await.unwrap();
+    b.await.unwrap();
+    assert_eq!(remote.status().read_errors, 0, "no read broke off mid-frame");
+    phone.shutdown().await;
+    pc.shutdown().await;
+}

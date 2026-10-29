@@ -7,6 +7,12 @@ edition = "2024"
 version = "0.1.0"
 license = "MIT"
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 4

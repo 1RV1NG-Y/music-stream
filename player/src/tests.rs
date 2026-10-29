@@ -65,8 +65,52 @@ impl MediaSource for Stalled {
     }
 }
 
-/// `None` entries stall.
+/// Gives `bytes` up to `cut`, then stalls like a phone that went away mid-track.
+struct StallsAfter {
+    bytes: Vec<u8>,
+    cut: usize,
+    pos: usize,
+    interrupt: Arc<AtomicBool>,
+}
+
+impl std::io::Read for StallsAfter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.cut {
+            return Stalled(self.interrupt.clone()).read(buf);
+        }
+        let n = buf.len().min(self.cut - self.pos);
+        buf[..n].copy_from_slice(&self.bytes[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+impl std::io::Seek for StallsAfter {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        if let std::io::SeekFrom::Start(p) = to {
+            self.pos = p as usize;
+        }
+        Ok(self.pos as u64)
+    }
+}
+impl MediaSource for StallsAfter {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.bytes.len() as u64)
+    }
+}
+
+/// `None` entries stall; `cut` makes an entry stall after that many bytes; `delay` slows
+/// every open after the first, like fetching the start of the next track from the phone.
 struct Tracks(Vec<Option<Vec<u8>>>);
+
+struct Slow {
+    tracks: Vec<Vec<u8>>,
+    delay: Duration,
+    cut: Option<usize>,
+    opened: std::sync::atomic::AtomicUsize,
+}
 
 impl Provider for Tracks {
     type Item = usize;
@@ -74,6 +118,21 @@ impl Provider for Tracks {
         let source: Box<dyn MediaSource> = match &self.0[*item] {
             Some(bytes) => Box::new(Cursor::new(bytes.clone())),
             None => Box::new(Stalled(interrupt)),
+        };
+        Ok(Opened { source, ext: "wav".into() })
+    }
+}
+
+impl Provider for Slow {
+    type Item = usize;
+    fn open(&self, item: &usize, interrupt: Arc<AtomicBool>) -> Result<Opened> {
+        if self.opened.fetch_add(1, Ordering::Relaxed) > 0 {
+            std::thread::sleep(self.delay);
+        }
+        let bytes = self.tracks[*item].clone();
+        let source: Box<dyn MediaSource> = match self.cut {
+            Some(cut) => Box::new(StallsAfter { cut: cut.min(bytes.len()), bytes, pos: 0, interrupt }),
+            None => Box::new(Cursor::new(bytes)),
         };
         Ok(Opened { source, ext: "wav".into() })
     }
@@ -205,4 +264,92 @@ fn skipping_away_from_a_stalled_track_plays_the_next_at_once() {
     let t = Instant::now();
     drop(p);
     assert!(t.elapsed() < Duration::from_millis(200));
+}
+
+/// Pulls 10 ms at a time on a real-time clock, like a sound card, silence included.
+fn render_realtime(sink: &mut ManualSink, frames: usize) -> (Vec<f32>, usize) {
+    let chunk = sink.rate as usize / 100;
+    let mut out = Vec::with_capacity(frames * sink.channels as usize);
+    let mut silent_chunks = 0;
+    let start = Instant::now();
+    let mut k = 0u32;
+    while out.len() < frames * sink.channels as usize {
+        let (samples, real) = sink.render(chunk);
+        if real < samples.len() {
+            silent_chunks += 1;
+        }
+        out.extend(samples);
+        k += 1;
+        let due = start + Duration::from_millis(10) * k;
+        if let Some(wait) = due.checked_duration_since(Instant::now()) {
+            std::thread::sleep(wait);
+        }
+    }
+    out.truncate(frames * sink.channels as usize);
+    (out, silent_chunks)
+}
+
+#[test]
+fn gapless_in_real_time_even_when_the_next_track_is_slow_to_open() {
+    let rate = 44100;
+    let total = 3 * rate as usize;
+    let cuts = [0, 50_000, 99_999, total];
+    let f = sine(440.0, rate);
+    let tracks = (0..3).map(|k| wav(rate, 2, cuts[k + 1] - cuts[k], |i, c| f(i + cuts[k], c))).collect();
+    // Each later track takes 300 ms to open, as fetching its start from the phone might.
+    let provider = Slow { tracks, delay: Duration::from_millis(300), cut: None, opened: Default::default() };
+    let (p, sink) = Player::new(provider, OutputKind::Manual { rate, channels: 2 }).unwrap();
+    let mut sink = sink.unwrap();
+    p.set_queue(vec![0, 1, 2], 0, true);
+    // Startup may be silent; from the first audio on, the output must never miss a sample.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut first = loop {
+        let (s, real) = sink.render(441);
+        if real > 0 {
+            assert_eq!(real, s.len(), "audio starts with a full buffer");
+            break s;
+        }
+        assert!(Instant::now() < deadline, "no audio");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let (rest, silent) = render_realtime(&mut sink, total - 441 - 2000);
+    first.extend(rest);
+    assert_eq!(silent, 0, "{silent} chunks of 10 ms had gaps");
+    for (i, s) in first.iter().enumerate() {
+        let expected = q(f(i / 2, 0)) as f32 / 32768.0;
+        assert!((s - expected).abs() < 1e-4, "sample {i}: {s} vs {expected}");
+    }
+}
+
+#[test]
+fn pause_and_status_respond_while_the_phone_is_unreachable() {
+    let rate = 44100;
+    // Half a second of audio arrives, then the "phone" stops answering.
+    let track = wav(rate, 2, 4 * rate as usize, sine(440.0, rate));
+    let provider = Slow { tracks: vec![track], delay: Duration::ZERO, cut: Some(44 + rate as usize * 2 * 2 / 2), opened: Default::default() };
+    let (p, sink) = Player::new(provider, OutputKind::Manual { rate, channels: 2 }).unwrap();
+    let mut sink = sink.unwrap();
+    p.set_queue(vec![0], 0, true);
+    let got = pull(&mut sink, 4410);
+    assert!(!got.is_empty());
+    std::thread::sleep(Duration::from_millis(200)); // the worker is now blocked on the read
+
+    let t = Instant::now();
+    p.pause();
+    assert!(!p.status().playing, "status shows the pause at once");
+    let (_, real) = sink.render(441);
+    assert_eq!(real, 0, "the output goes quiet at once");
+    assert!(t.elapsed() < Duration::from_millis(50));
+
+    // Resuming plays what was buffered, then reports buffering instead of going quiet silently.
+    p.play();
+    assert!(p.status().playing);
+    let before = p.status().position_ms;
+    let (_, real) = sink.render(4410);
+    assert!(real > 0, "buffered audio plays");
+    assert!(p.status().position_ms > before, "position moves while the worker is blocked");
+    while sink.render(4410).1 > 0 {}
+    sink.render(441);
+    let st = p.status();
+    assert!(st.playing && st.buffering, "waiting for the phone shows as buffering: {st:?}");
 }

@@ -5,7 +5,9 @@ says what is done, what is verified, and exactly what is left, so work can resum
 
 Last updated: 2026-10-29. The plan has passed two reviews by Astra (go-ahead for M0). Then the
 user reprioritized: **a usable build first (U1, PLAN §8)**, measurements after. U1 is built,
-installed on the user's Linux PC and S22, and playing music end to end.
+installed on the user's Linux PC and S22, and plays end to end. Astra's third review found two
+bugs (fixed below). The user checked the main device paths and waived the edge cases; next
+come app features (see Next).
 
 ## Done
 
@@ -25,10 +27,43 @@ favorites arrive with `TrackRef` (PLAN §3–§4).
 |---|---|---|
 | Phone library: folder walk, fingerprints/revs, tags (lofty), 512 px JPEG art, aliases (normalized, one hop), index snapshot (postcard + zstd) | `core/src/library.rs` | 6 unit tests: unchanged rescan keeps the hash; two volumes → two ids; mid-file edit with mtime restored → new rev; move → alias, move back → reversed, delete → unresolved; move with a duplicate → no alias; serving refuses changed / renamed-over files |
 | Stream protocol (Index, Read, Art) on extra QUIC streams; serving with per-block revision checks and positional reads; library head published through the replicated doc so PCs refresh at once | `core/src/node/stream.rs`, `proto.rs`, `model.rs` | `core/tests/stream.rs` (two nodes over real QUIC) |
-| PC side: cached index, art cache, on-demand fetch (from the wanted block, restarts on far seeks), whole-track cache with LRU, reads interruptible by the player | `core/src/remote.rs` | same: random and concurrent reads match; cached track plays with the phone gone; changed file → error + index catches up; a stalled read is released by the interrupt within 500 ms |
-| Player: symphonia decode, ReplayGain, channel mapping, rubato (FFT) resampling, 1 s lock-free ring, cpal callback that never waits, gapless, accurate seek, queue ops | `player/` | 6 tests rendering to a buffer: gapless sample-exact at 44.1; continuous through 44.1→48; 192 kHz mono → 48 kHz stereo at the right pitch and length; downmix; seek; skip away from a stalled track plays the next within 200 ms |
-| App shell from reader-sync (Tauri, Android service, tray), `music` command, `art:` scheme, queue/volume saved and restored paused | `app/src-tauri/` | user: pairs and plays end to end on Linux + S22, phone locked |
+| PC side: cached index, art cache, on-demand fetch (from the wanted block, restarts on far seeks), whole-track cache with LRU, reads interruptible by the player | `core/src/remote.rs` | same: random and concurrent reads match; cached track plays with the phone gone; changed file → error + index catches up; a stalled read is released by the interrupt within 500 ms; constant seeking while blocks arrive breaks no read (`readErrors` = 0; the old loop broke 9) |
+| Player: symphonia decode, ReplayGain, channel mapping, rubato (FFT) resampling, 1 s lock-free ring, cpal callback that never waits, gapless, accurate seek, queue ops | `player/` | 8 tests rendering to a buffer: gapless sample-exact at 44.1; continuous through 44.1→48; 192 kHz mono → 48 kHz stereo at the right pitch and length; downmix; seek; skip away from a stalled track plays the next within 200 ms; **real-time gapless** (10 ms device-style pulls, silence counted, next tracks 300 ms slow to open: no gap, sample-exact); **pause and status during a stall** (pause silences the output and shows at once; position moves; an empty ring while playing reports buffering) |
+| App shell from reader-sync (Tauri, Android service, tray), `music` command, `art:` scheme, queue/volume saved and restored paused | `app/src-tauri/` | user (first build): pairs and plays on Linux + S22, phone locked. Full checklist below still open |
 | UI: OLED black / orange; albums, album page, artists, songs, search, queue, player bar; phone screen (status, rescan, devices, background serving) | `app/src/` | `npm test` (grouping, search, formats); used by the user on Linux and the S22 |
+
+**Astra's third review (2026-10-29), fixed:**
+1. *A wake for a seek could cancel a block read halfway*, leaving the stream mid-frame and
+   the next read misparsing audio bytes as a header (retries, stalls). Now a task of its own
+   reads each stream's events whole and hands them over a channel; a wake never touches the
+   stream. Test: `constant_seeking_never_breaks_a_read`.
+2. *Pause didn't respond while the decoder waited for the phone*, and status froze. Now
+   play/pause act on the output's flag directly, and playing/position/buffering are computed
+   from the output's counters and a shared timeline, not published by the worker.
+3. *Gapless claim qualified:* the earlier tests waited for samples and ignored underrun
+   silence. The real-time test above closes that for the player; **listening across real FLAC
+   album boundaries on the user's devices is still to do.**
+
+**U1 device checklist (Astra), results from the user on the second build (2026-10-29):**
+- Pairing: works. Playback with the phone locked: works.
+- Uncached playback: most songs start almost instantly; the slowest found down the queue
+  was still quick.
+- Seeking forward and back within a song: good.
+- Album transitions (gapless by ear), phone Wi-Fi off mid-track, cached playback offline:
+  **not checked, waived by the user as edge cases** for now; they'll report issues if they
+  hit them. The real-time gapless test covers the player side only.
+- Outside U1, still open: Windows, the long-idle play, battery.
+
+## Next (the user's priorities, 2026-10-29)
+
+App features before more verification:
+1. Shuffle and repeat (off / all / one), per PLAN §7's v1 behavior.
+2. Keyboard and OS media controls: media keys and the system's now-playing panel (MPRIS on
+   Linux, SMTC on Windows, via `souvlaki`, PLAN §6), plus in-app shortcuts (next/previous,
+   seek, volume).
+3. Playlists and favorites (`TrackRef`, PLAN §3–§4, §7), "next track unavailable" behavior
+   (§7).
+4. Library gaps: Opus decoding (4 songs), naming the 2 unreadable files on the phone.
 
 U1 cut-downs (as PLAN §8 says): whole-track cache instead of segment files; folder walk instead
 of MediaStore notifications (rescan every 5 min, on start, and on "Scan again"); no playlists,
@@ -74,8 +109,12 @@ another decoder.
   entry (`npm run install:linux` in `app/`). Starts cleanly: node ready, output 48 kHz f32.
 - **Verified by the user (2026-10-29):** paired, library browsed on Linux, music plays end to
   end, **including with the phone locked**. (Firewall rule for UDP 47120 as below.)
-- The fixes after the first install (phone header hidden by a narrow-screen rule; rescan when
-  the phone app comes to the front) are in the source, not in the installed builds yet.
+- **Second install (2026-10-29, 15:26):** both devices run the build with Astra's two fixes,
+  the phone header, and rescan-on-focus. The phone reconnected to the PC by itself after the
+  APK was replaced. (The PC app must be restarted to run the new build.)
+- Build settings changed by the user's disk-space session: `[profile.dev]` line-tables-only
+  debug info (none for dependencies), and the Tauri lib no longer builds the iOS-only
+  `staticlib`. Both builds work with them.
 
 **Library gaps found:**
 - 5 `.opus` files (4 in `Music/SpotiFLAc`) aren't scanned: `.opus` isn't in the scanned

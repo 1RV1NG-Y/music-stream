@@ -655,3 +655,8 @@ Open:
 4. Alias cycles → no current id as a key, flattened aliases, one-hop resolution (§3);
    `A → B → A` then delete tested in Track A.
 5. v1 player behavior (queue, shuffle, repeat, playlists, restore, unavailable tracks) → §7.
+
+**2026-10-29, Astra's third review** (of the U1 build): fetch streams read whole events in their
+own task (a seek's wake could cut a frame); play/pause and status no longer wait on a blocked
+decoder; a real-time gapless test added, and gapless on real albums stays to be heard. U1 is
+verified only after the device checklist in STATUS.md.

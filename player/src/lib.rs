@@ -76,7 +76,6 @@ enum Cmd<I> {
     Jump(usize),
     Play,
     Pause,
-    Toggle,
     Next,
     Prev,
     Seek(u64),
@@ -95,6 +94,8 @@ struct Shared {
     starved: AtomicBool,
     underruns: AtomicU64,
     failed: AtomicBool,
+    /// The queue ran out; the output plays what's left.
+    ended: AtomicBool,
 }
 
 impl Shared {
@@ -108,6 +109,7 @@ impl Shared {
             starved: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
             failed: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
         }
     }
 }
@@ -126,6 +128,7 @@ pub struct Player<P: Provider> {
     shared: Arc<Shared>,
     status: Arc<Mutex<Status>>,
     queue: Arc<Mutex<Vec<P::Item>>>,
+    timeline: Arc<Mutex<Timeline>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -136,14 +139,15 @@ impl<P: Provider> Player<P> {
         let interrupt = Arc::new(AtomicBool::new(false));
         let status = Arc::new(Mutex::new(Status { volume: 1.0, ..Status::default() }));
         let queue = Arc::new(Mutex::new(Vec::new()));
+        let timeline = Arc::new(Mutex::new(Timeline::default()));
         let (tx, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let worker = {
-            let (shared, interrupt, status, queue) = (shared.clone(), interrupt.clone(), status.clone(), queue.clone());
+            let (shared, interrupt, status, queue, timeline) = (shared.clone(), interrupt.clone(), status.clone(), queue.clone(), timeline.clone());
             std::thread::Builder::new()
                 .name("player".into())
                 .spawn(move || {
-                    let mut w = Worker::new(provider, shared, interrupt, status, queue, rx);
+                    let mut w = Worker::new(provider, shared, interrupt, status, queue, timeline, rx);
                     let sink = match w.open_output(&output) {
                         Ok(sink) => sink,
                         Err(e) => {
@@ -156,7 +160,7 @@ impl<P: Provider> Player<P> {
                 })?
         };
         let sink = ready_rx.recv().context("the player didn't start")??;
-        Ok((Player { tx, interrupt, shared, status, queue, worker: Some(worker) }, sink))
+        Ok((Player { tx, interrupt, shared, status, queue, timeline, worker: Some(worker) }, sink))
     }
 
     fn send(&self, cmd: Cmd<P::Item>, interrupt: bool) {
@@ -166,8 +170,18 @@ impl<P: Provider> Player<P> {
         }
     }
 
+    /// The worker publishes the rest; playing, position and buffering come straight from the
+    /// output, so they stay true while the worker waits on a read.
     pub fn status(&self) -> Status {
-        self.status.lock().unwrap().clone()
+        let mut st = self.status.lock().unwrap().clone();
+        let playing = !self.shared.paused.load(Ordering::Relaxed);
+        let (index, position_ms, duration_ms) = self.timeline.lock().unwrap().at(self.shared.played.load(Ordering::Relaxed));
+        st.index = index;
+        st.position_ms = position_ms;
+        st.duration_ms = duration_ms;
+        st.playing = playing;
+        st.buffering = playing && !self.shared.ended.load(Ordering::Relaxed) && self.shared.starved.load(Ordering::Relaxed);
+        st
     }
 
     pub fn queue(&self) -> Vec<P::Item> {
@@ -191,14 +205,20 @@ impl<P: Provider> Player<P> {
     pub fn jump(&self, index: usize) {
         self.send(Cmd::Jump(index), true);
     }
+    /// Takes effect in the output at once, even while the worker waits on a read.
     pub fn play(&self) {
+        if !self.queue.lock().unwrap().is_empty() && !self.shared.ended.load(Ordering::Relaxed) {
+            self.shared.paused.store(false, Ordering::Relaxed);
+        }
         self.send(Cmd::Play, false);
     }
+    /// Takes effect in the output at once, even while the worker waits on a read.
     pub fn pause(&self) {
+        self.shared.paused.store(true, Ordering::Relaxed);
         self.send(Cmd::Pause, false);
     }
     pub fn toggle(&self) {
-        self.send(Cmd::Toggle, false);
+        if self.shared.paused.load(Ordering::Relaxed) { self.play() } else { self.pause() }
     }
     pub fn next(&self) {
         self.send(Cmd::Next, true);
@@ -257,6 +277,14 @@ impl ManualSink {
         let n = fill(&self.shared, &mut self.consumer, &mut out, self.channels as usize);
         out.truncate(n);
         out
+    }
+
+    /// Renders exactly `frames` frames as the device would: silence where audio is missing.
+    /// Also returns how many samples were real audio.
+    pub fn render(&mut self, frames: usize) -> (Vec<f32>, usize) {
+        let mut out = vec![0.0; frames * self.channels as usize];
+        let n = fill(&self.shared, &mut self.consumer, &mut out, self.channels as usize);
+        (out, n)
     }
 }
 
@@ -541,6 +569,30 @@ struct Mark {
     duration_ms: u64,
 }
 
+/// Where each track starts in the output, shared so the status stays live while the worker
+/// waits on a read.
+#[derive(Default)]
+struct Timeline {
+    marks: VecDeque<Mark>,
+    rate: u64,
+    /// The queue position when nothing has been marked yet.
+    index: Option<usize>,
+}
+
+impl Timeline {
+    /// (queue index, position in ms, duration in ms) of what the output plays after `played` frames.
+    fn at(&self, played: u64) -> (Option<usize>, u64, u64) {
+        let rate = self.rate.max(1);
+        match self.marks.iter().rev().find(|m| m.frame <= played) {
+            Some(m) => (Some(m.index), (m.start_ms + (played - m.frame) * 1000 / rate).min(m.duration_ms.max(1)), m.duration_ms),
+            None => match self.marks.front() {
+                Some(m) => (Some(m.index), m.start_ms, m.duration_ms),
+                None => (self.index, 0, 0),
+            },
+        }
+    }
+}
+
 struct Worker<P: Provider> {
     provider: P,
     shared: Arc<Shared>,
@@ -557,7 +609,7 @@ struct Worker<P: Provider> {
     rate: Option<Rate>,
     pending: Vec<f32>,
     written: u64,
-    marks: VecDeque<Mark>,
+    timeline: Arc<Mutex<Timeline>>,
     /// The queue ran out; the output plays what's left.
     ended: bool,
     /// The current item must be reopened at this position (its read was interrupted).
@@ -566,7 +618,7 @@ struct Worker<P: Provider> {
 }
 
 impl<P: Provider> Worker<P> {
-    fn new(provider: P, shared: Arc<Shared>, interrupt: Arc<AtomicBool>, status: Arc<Mutex<Status>>, queue: Arc<Mutex<Vec<P::Item>>>, rx: mpsc::Receiver<Cmd<P::Item>>) -> Self {
+    fn new(provider: P, shared: Arc<Shared>, interrupt: Arc<AtomicBool>, status: Arc<Mutex<Status>>, queue: Arc<Mutex<Vec<P::Item>>>, timeline: Arc<Mutex<Timeline>>, rx: mpsc::Receiver<Cmd<P::Item>>) -> Self {
         Worker {
             provider,
             shared,
@@ -582,7 +634,7 @@ impl<P: Provider> Worker<P> {
             rate: None,
             pending: Vec::new(),
             written: 0,
-            marks: VecDeque::new(),
+            timeline,
             ended: false,
             reopen_at: None,
             error: None,
@@ -725,7 +777,7 @@ impl<P: Provider> Worker<P> {
 
     /// Position of the decoder in the current track.
     fn decoded_ms(&self) -> u64 {
-        let start = self.marks.back().map_or(0, |m| m.start_ms);
+        let start = self.timeline.lock().unwrap().marks.back().map_or(0, |m| m.start_ms);
         let rate = self.current.as_ref().map_or(0, |d| d.rate as u64);
         start + if rate > 0 { self.decoded_frames * 1000 / rate } else { 0 }
     }
@@ -747,6 +799,7 @@ impl<P: Provider> Worker<P> {
         let next = self.index.map_or(0, |i| i + 1);
         if next >= len {
             self.ended = true;
+            self.shared.ended.store(true, Ordering::Relaxed);
             if let Some(r) = &mut self.rate {
                 let mut tail = Vec::new();
                 let _ = r.flush(&mut tail);
@@ -764,6 +817,7 @@ impl<P: Provider> Worker<P> {
         let Some(i) = self.index else { return };
         let Some(item) = self.queue.lock().unwrap().get(i).cloned() else { return };
         self.ended = false;
+        self.shared.ended.store(false, Ordering::Relaxed);
         self.decoded_frames = 0;
         let opened = self.provider.open(&item, self.interrupt.clone()).and_then(|o| open_decoding(o, self.provider.gain(&item)));
         match opened {
@@ -778,10 +832,13 @@ impl<P: Provider> Worker<P> {
                         tracing::debug!("seek failed: {e:#}");
                     }
                 }
-                self.marks.push_back(Mark { frame: self.written + (self.pending.len() / self.out_channels()) as u64, index: i, start_ms: at_ms, duration_ms: dec.duration_ms });
-                while self.marks.len() > 8 {
-                    self.marks.pop_front();
+                let frame = self.written + (self.pending.len() / self.out_channels()) as u64;
+                let mut tl = self.timeline.lock().unwrap();
+                tl.marks.push_back(Mark { frame, index: i, start_ms: at_ms, duration_ms: dec.duration_ms });
+                while tl.marks.len() > 8 {
+                    tl.marks.pop_front();
                 }
+                drop(tl);
                 self.error = None;
                 self.current = Some(dec);
                 if let Some(next) = self.queue.lock().unwrap().get(i + 1).cloned() {
@@ -827,35 +884,24 @@ impl<P: Provider> Worker<P> {
             std::thread::sleep(Duration::from_millis(2));
         }
         self.written = 0;
-        self.marks.clear();
+        let mut tl = self.timeline.lock().unwrap();
+        tl.marks.clear();
+        tl.index = self.index;
+        tl.rate = self.out.as_ref().map_or(48000, |o| o.rate) as u64;
+        drop(tl);
         self.ended = false;
+        self.shared.ended.store(false, Ordering::Relaxed);
     }
 
     /// (queue index, position in ms) of what the output is playing now.
     fn position(&self) -> (Option<usize>, u64) {
-        let played = self.shared.played.load(Ordering::Relaxed);
-        let rate = self.out.as_ref().map_or(48000, |o| o.rate) as u64;
-        match self.marks.iter().rev().find(|m| m.frame <= played) {
-            Some(m) => (Some(m.index), (m.start_ms + (played - m.frame) * 1000 / rate).min(m.duration_ms.max(1))),
-            None => match self.marks.front() {
-                Some(m) => (Some(m.index), m.start_ms),
-                None => (self.index, 0),
-            },
-        }
+        let (index, ms, _) = self.timeline.lock().unwrap().at(self.shared.played.load(Ordering::Relaxed));
+        (index, ms)
     }
 
-    fn mark_duration(&self, index: Option<usize>) -> u64 {
-        self.marks.iter().rev().find(|m| Some(m.index) == index).map_or(0, |m| m.duration_ms)
-    }
-
+    /// Publishes what only the worker knows; `Player::status` adds the live parts.
     fn publish(&self) {
-        let (index, position_ms) = self.position();
         let mut st = self.status.lock().unwrap();
-        st.index = index;
-        st.playing = self.playing;
-        st.position_ms = position_ms;
-        st.duration_ms = self.mark_duration(index);
-        st.buffering = self.playing && !self.ended && self.shared.starved.load(Ordering::Relaxed);
         st.error = self.error.clone();
         st.output = self.out.as_ref().map(|o| format!("{} · {} Hz", o.name, o.rate)).unwrap_or_default();
     }
@@ -885,7 +931,7 @@ impl<P: Provider> Worker<P> {
                 drop(q);
                 if let Some(i) = self.index.filter(|&i| at <= i) {
                     self.index = Some(i + n);
-                    self.marks.iter_mut().filter(|m| m.index >= at).for_each(|m| m.index += n);
+                    self.timeline.lock().unwrap().marks.iter_mut().filter(|m| m.index >= at).for_each(|m| m.index += n);
                 }
                 if self.index.is_none() && n > 0 {
                     self.index = Some(at);
@@ -910,7 +956,7 @@ impl<P: Provider> Worker<P> {
                     }
                     Some(i) if i > at => {
                         self.index = Some(i - 1);
-                        self.marks.iter_mut().filter(|m| m.index > at).for_each(|m| m.index -= 1);
+                        self.timeline.lock().unwrap().marks.iter_mut().filter(|m| m.index > at).for_each(|m| m.index -= 1);
                     }
                     _ => {}
                 }
@@ -935,7 +981,7 @@ impl<P: Provider> Worker<P> {
                     }
                 };
                 self.index = self.index.map(remap);
-                self.marks.iter_mut().for_each(|m| m.index = remap(m.index));
+                self.timeline.lock().unwrap().marks.iter_mut().for_each(|m| m.index = remap(m.index));
                 // The track after the current one may have changed: gapless follows the queue.
             }
             Cmd::Jump(i) => {
@@ -956,10 +1002,6 @@ impl<P: Provider> Worker<P> {
                 self.set_playing(len > 0);
             }
             Cmd::Pause => self.set_playing(false),
-            Cmd::Toggle => {
-                let play = !self.playing;
-                return self.handle(if play { Cmd::Play } else { Cmd::Pause });
-            }
             Cmd::Next => {
                 let (shown, _) = self.position();
                 let next = shown.map_or(0, |i| i + 1);

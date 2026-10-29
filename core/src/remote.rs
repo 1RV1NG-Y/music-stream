@@ -49,6 +49,8 @@ pub struct RemoteStatus {
     pub error: Option<String>,
     pub cache_bytes: u64,
     pub cache_limit: u64,
+    /// Track reads that broke off mid-way (network trouble) since the app started.
+    pub read_errors: u64,
 }
 
 struct Cached {
@@ -68,6 +70,7 @@ struct Inner {
     cache_limit: AtomicU64,
     refresh: Notify,
     error: Mutex<Option<String>>,
+    read_errors: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -96,6 +99,7 @@ impl Remote {
             cache_limit: AtomicU64::new(DEFAULT_CACHE_LIMIT),
             refresh: Notify::new(),
             error: Mutex::new(None),
+            read_errors: AtomicU64::new(0),
         }));
         tokio::spawn(remote.clone().refresh_loop());
         Ok(remote)
@@ -118,6 +122,7 @@ impl Remote {
             error: self.0.error.lock().unwrap().clone(),
             cache_bytes: self.cache_files().iter().map(|(_, _, size, _)| size).sum(),
             cache_limit: self.0.cache_limit.load(Ordering::Relaxed),
+            read_errors: self.0.read_errors.load(Ordering::Relaxed),
         }
     }
 
@@ -305,7 +310,7 @@ impl Remote {
             };
             let wake = f.wake.notified();
             let stream = self.0.node.read_range(f.id, f.rev, start * BLOCK, (end * BLOCK).min(f.size)).await;
-            let mut stream = match stream {
+            let stream = match stream {
                 Ok(s) => s,
                 Err(e) => {
                     // No phone right now: wait for it, or for a reader to ask again.
@@ -317,11 +322,25 @@ impl Remote {
                     continue;
                 }
             };
+            // `ReadStream::next` isn't cancel-safe (a frame can be half read), so a task of
+            // its own reads whole events; waking for a seek never interrupts it. Dropping
+            // `events` (starting over elsewhere) ends the task and the stream.
+            let (tx, mut events) = tokio::sync::mpsc::channel(4);
+            tokio::spawn(async move {
+                let mut stream = stream;
+                loop {
+                    let ev = stream.next().await;
+                    let last = !matches!(ev, Ok(ReadEvent::Block { .. }));
+                    if tx.send(ev).await.is_err() || last {
+                        return;
+                    }
+                }
+            });
             let mut next = start;
             loop {
                 let wake = f.wake.notified();
                 tokio::select! {
-                    ev = stream.next() => match ev {
+                    ev = events.recv() => match ev.unwrap_or_else(|| Err(anyhow::anyhow!("the read ended"))) {
                         Ok(ReadEvent::Block { offset, bytes }) => {
                             failures = 0;
                             if f.store(offset, &bytes) {
@@ -344,6 +363,7 @@ impl Remote {
                         }
                         Err(e) => {
                             tracing::debug!("fetch interrupted: {e:#}");
+                            self.0.read_errors.fetch_add(1, Ordering::Relaxed);
                             failures += 1;
                             tokio::time::sleep(Duration::from_millis(200 * failures.min(10) as u64)).await;
                             break;
