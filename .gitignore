@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+*.log
+
+# Android build output and generated signing material
+app/src-tauri/gen/android/app/build/
+app/android-dist/
+.claude/
