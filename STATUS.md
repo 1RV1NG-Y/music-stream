@@ -54,16 +54,18 @@ favorites arrive with `TrackRef` (PLAN §3–§4).
   hit them. The real-time gapless test covers the player side only.
 - Outside U1, still open: Windows, the long-idle play, battery.
 
-## Next (the user's priorities, 2026-10-29)
+## Desktop features, round 1 (2026-10-30; installed on Linux, not yet tried by the user)
 
-App features before more verification:
-1. Shuffle and repeat (off / all / one), per PLAN §7's v1 behavior.
-2. Keyboard and OS media controls: media keys and the system's now-playing panel (MPRIS on
-   Linux, SMTC on Windows, via `souvlaki`, PLAN §6), plus in-app shortcuts (next/previous,
-   seek, volume).
-3. Playlists and favorites (`TrackRef`, PLAN §3–§4, §7), "next track unavailable" behavior
-   (§7).
-4. Library gaps: Opus decoding (4 songs), naming the 2 unreadable files on the phone.
+| Piece | Where | Verified by |
+|---|---|---|
+| Shuffle (current song first, the rest random; off restores the order, keeping songs queued meanwhile after the current one) and repeat off/all/one | `player/` | 4 new tests, incl. a real bug found and fixed: near a track's end the decoder is already into the next song, so shuffle and queue edits now follow the song being heard |
+| Playlists (movable lists of `TrackRef`), Liked songs, per-device play history; mergeable Loro containers | `core/src/model.rs`, `node/userdata.rs` | merge tests (edits made apart on two docs; plays from two PCs); `resolve_ref` by id, alias, or a unique fallback |
+| Automatic playlists: On Repeat (≥2 plays in 30 days), Recently played, Recently added (file mtime), Most played; a play counts after half the song or 4 min | `app/src-tauri/src/desktop.rs` | builds; to be tried |
+| Media keys and the desktop's now-playing panel (MPRIS; SMTC code path for Windows untested) | `app/src-tauri/src/media.rs` | registered on the session bus; `playerctl -p music_stream status` answers |
+| UI: songs-first sidebar (Songs, Playlists, Albums, Artists); Songs sort Default / Name / Date added, each up or down; right-click / ⋯ menu; drag to reorder playlists and the queue, drag songs onto a sidebar playlist; queue side panel; shuffle, repeat and like in the player bar; keyboard shortcuts with a `?` sheet | `app/src/` | `npm test` (sorting); the UI itself can't be screenshotted here (GNOME refuses), so the user's look is the check |
+
+Still to come: the phone as a player too (after the desktop polish), Opus (4 songs), naming
+the 2 unreadable files, Windows checks.
 
 U1 cut-downs (as PLAN §8 says): whole-track cache instead of segment files; folder walk instead
 of MediaStore notifications (rescan every 5 min, on start, and on "Scan again"); no playlists,

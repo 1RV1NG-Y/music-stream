@@ -143,6 +143,65 @@ impl Index {
     }
 }
 
+/// How playlists, likes and play counts refer to a track (PLAN.md §3): its id, plus tags to
+/// find it again if the file was re-ripped under another path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackRef {
+    pub id: String,
+    pub fallback: Fallback,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Fallback {
+    pub album_artist: String,
+    pub album: String,
+    pub disc: u32,
+    pub track: u32,
+    pub title: String,
+    pub duration_s: u64,
+}
+
+impl Track {
+    pub fn reference(&self) -> TrackRef {
+        TrackRef {
+            id: hex(&self.id),
+            fallback: Fallback {
+                album_artist: if self.album_artist.is_empty() { self.artist.clone() } else { self.album_artist.clone() },
+                album: self.album.clone(),
+                disc: self.disc,
+                track: self.track,
+                title: self.title.clone(),
+                duration_s: (self.duration_ms + 500) / 1000,
+            },
+        }
+    }
+}
+
+impl Index {
+    /// Where a stored reference points now (PLAN.md §3): the id while it's current, else one
+    /// alias hop, else the one track whose tags match its fallback (none if several do).
+    pub fn resolve_ref(&self, r: &TrackRef) -> Option<&Track> {
+        if let Some(t) = parse_hex::<16>(&r.id).ok().and_then(|id| self.resolve(&id)) {
+            return Some(t);
+        }
+        let f = &r.fallback;
+        if f.title.is_empty() {
+            return None;
+        }
+        let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+        let mut matches = self.tracks.iter().filter(|t| {
+            let g = t.reference().fallback;
+            same(&g.album_artist, &f.album_artist) && same(&g.album, &f.album) && g.disc == f.disc && g.track == f.track && same(&g.title, &f.title) && g.duration_s.abs_diff(f.duration_s) <= 1
+        });
+        match (matches.next(), matches.next()) {
+            (Some(t), None) => Some(t),
+            _ => None,
+        }
+    }
+}
+
 pub fn track_id(volume: &str, path: &str) -> TrackId {
     let mut h = blake3::Hasher::new();
     h.update(volume.as_bytes());
@@ -780,6 +839,26 @@ pub(crate) mod tests {
         std::fs::rename(&other, &a).unwrap();
         assert!(matches!(l.open_for_serving(&t.id, t.rev), Err(ServeError::Changed { .. })));
         assert!(matches!(l.open_for_serving(&[9; 16], 1), Err(ServeError::Missing)));
+    }
+
+    #[test]
+    fn references_resolve_by_id_alias_or_a_unique_fallback() {
+        let (d, m) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        write_flac(&m.path().join("a.flac"), "Song", 50);
+        let l = lib(d.path(), m.path());
+        l.scan().unwrap();
+        let r = l.index().tracks[0].reference();
+        assert_eq!(l.index().resolve_ref(&r).unwrap().title, "Song");
+        // Re-ripped under another path with other bytes: found by its tags.
+        std::fs::remove_file(m.path().join("a.flac")).unwrap();
+        write_flac(&m.path().join("b.flac"), "Song", 60);
+        l.scan().unwrap();
+        assert!(l.index().aliases.is_empty(), "different bytes: no alias");
+        assert_eq!(l.index().resolve_ref(&r).unwrap().path, "b.flac");
+        // Two matching tracks: no guess.
+        write_flac(&m.path().join("c.flac"), "Song", 60);
+        l.scan().unwrap();
+        assert!(l.index().resolve_ref(&r).is_none());
     }
 
     #[test]

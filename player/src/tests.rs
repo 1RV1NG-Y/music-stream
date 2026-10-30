@@ -353,3 +353,98 @@ fn pause_and_status_respond_while_the_phone_is_unreachable() {
     let st = p.status();
     assert!(st.playing && st.buffering, "waiting for the phone shows as buffering: {st:?}");
 }
+
+fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !cond() {
+        assert!(Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn shuffle_keeps_the_current_track_and_off_restores_the_order() {
+    let rate = 8000;
+    let tracks = (0..20).map(|_| Some(wav(rate, 1, rate as usize, sine(440.0, rate)))).collect();
+    let (p, mut sink) = manual(tracks, rate, 2);
+    p.set_queue((0..20).collect(), 7, true);
+    pull(&mut sink, 100);
+    p.set_shuffle(true);
+    wait_until("shuffled", || p.queue()[0] == 7);
+    let q = p.queue();
+    assert_eq!(p.status().index, Some(0), "the playing track moves to the top");
+    let mut sorted = q.clone();
+    sorted.sort();
+    assert_eq!(sorted, (0..20).collect::<Vec<_>>(), "every track is still there once");
+    assert_ne!(q, (0..20).collect::<Vec<_>>());
+
+    // Queued while shuffled: "play next" stays right after the current track when unshuffled.
+    p.insert(1, vec![100]);
+    wait_until("inserted", || p.queue().len() == 21);
+    p.set_shuffle(false);
+    wait_until("unshuffled", || p.queue()[0] == 0);
+    let mut expected: Vec<usize> = (0..20).collect();
+    expected.insert(8, 100);
+    assert_eq!(p.queue(), expected);
+    assert_eq!(p.status().index, Some(7), "still on the same track");
+    let st = p.status();
+    assert!(!st.shuffle);
+}
+
+#[test]
+fn repeat_one_replays_and_repeat_all_wraps() {
+    let rate = 8000;
+    let short = |freq| Some(wav(rate, 1, rate as usize / 4, sine(freq, rate)));
+    let (p, mut sink) = manual(vec![short(440.0), short(880.0)], rate, 2);
+    p.set_repeat(Repeat::One);
+    p.set_queue(vec![0, 1], 0, true);
+    // Three times the track's length later, still on the first track.
+    pull(&mut sink, rate as usize * 3 / 4);
+    assert_eq!(p.status().index, Some(0));
+    assert!(p.status().playing);
+
+    p.set_repeat(Repeat::All);
+    pull(&mut sink, rate as usize * 3 / 4);
+    let st = p.status();
+    assert!(st.playing, "repeat all never ends: {st:?}");
+    assert_eq!(st.repeat, Repeat::All);
+    // Next from the last track wraps to the first.
+    wait_until("on the second track", || { sink.pull(64); p.status().index == Some(1) });
+    p.next();
+    wait_until("wrapped", || { sink.pull(64); p.status().index == Some(0) });
+}
+
+#[test]
+fn shuffle_near_the_end_of_a_track_keeps_the_track_being_heard() {
+    let rate = 8000;
+    let tracks = (0..20).map(|_| Some(wav(rate, 1, rate as usize, sine(440.0, rate)))).collect();
+    let (p, mut sink) = manual(tracks, rate, 2);
+    p.set_queue((0..20).collect(), 7, true);
+    pull(&mut sink, 100);
+    let t = Instant::now();
+    p.set_shuffle(true);
+    let mut seen = vec![];
+    while t.elapsed() < Duration::from_secs(3) && p.queue()[0] != 7 {
+        seen.push(format!("{:?}", p.queue()));
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(p.queue()[0], 7, "after {:?}: {:?}", t.elapsed(), &seen[..seen.len().min(3)]);
+}
+
+#[test]
+fn play_next_in_the_last_second_of_a_track_is_not_skipped() {
+    let rate = 8000;
+    // Tracks are 0.8 s, shorter than the 1 s ring: the decoder is always into the next one.
+    let tracks = (0..4).map(|k| Some(wav(rate, 1, rate as usize * 4 / 5, sine(200.0 + 200.0 * k as f32, rate)))).collect();
+    let (p, mut sink) = manual(tracks, rate, 2);
+    p.set_queue(vec![0, 1, 2], 0, true);
+    pull(&mut sink, 400);
+    p.insert(1, vec![3]);
+    wait_until("inserted", || p.queue().len() == 4);
+    assert_eq!(p.queue(), vec![0, 3, 1, 2]);
+    wait_until("the inserted track plays next", || {
+        sink.pull(64);
+        p.status().index != Some(0)
+    });
+    assert_eq!(p.status().index, Some(1), "track 3 (now at 1) follows, not the old next");
+}

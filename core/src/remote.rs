@@ -181,6 +181,12 @@ impl Remote {
 
     // ---- Art -----------------------------------------------------------------------------
 
+    /// The cached thumbnail's file, if it has been fetched (for the system's media panel).
+    pub fn art_file(&self, hash: &ArtHash) -> Option<PathBuf> {
+        let path = self.0.dir.join("art").join(hex(hash));
+        path.exists().then_some(path)
+    }
+
     pub async fn art(&self, hash: ArtHash) -> Result<Option<Vec<u8>>> {
         let path = self.0.dir.join("art").join(hex(&hash));
         if let Ok(bytes) = tokio::fs::read(&path).await {

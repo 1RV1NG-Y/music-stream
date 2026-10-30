@@ -9,6 +9,8 @@ mod android;
 mod background;
 #[cfg(desktop)]
 mod desktop;
+#[cfg(desktop)]
+mod media;
 #[cfg(any(target_os = "android", test))]
 mod node_slot;
 
@@ -133,6 +135,9 @@ pub fn run() {
                     tracing::error!("the player could not start: {e:#}");
                 }
                 background::setup(app.handle(), node.clone())?;
+                if app.try_state::<desktop::Music>().is_some() {
+                    media::start(app.handle());
+                }
             }
             // Without a node there is nothing to keep running: just show the error.
             #[cfg(not(target_os = "android"))]

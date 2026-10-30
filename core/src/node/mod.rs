@@ -1,6 +1,7 @@
 //! A device's view of one synchronized library: storage, pairing, and live sync sessions.
 
 mod stream;
+mod userdata;
 
 pub use stream::{IndexReply, ReadEvent, ReadStream};
 

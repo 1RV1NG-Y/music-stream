@@ -206,8 +206,17 @@ favorites/<trackId>        { since, fallback }        (map; remove = unfavorite)
 A favorite's key and `fallback` together are a `TrackRef`, resolved like a playlist entry
 (§3). Unfavoriting removes every key that resolves to that track.
 
-Play counts and history are left for later (§9): every play would add history to the
-document, so they need a different design (per-device counters, compaction).
+**Play history** (for the automatic playlists, §7) uses per-device counters, so it merges
+without conflicts and stays bounded:
+
+```
+plays/<deviceId>/<trackId>   { count, last, recent: [day numbers of the last ≤ 32 plays], fallback }
+```
+
+Each PC writes only its own `deviceId`, one entry per track it has played; a play overwrites
+that entry. A play counts once at least half the track, or 4 minutes, has been heard. Loro
+still keeps each overwrite in its history (about 100 bytes a play, so roughly 1 MB for
+10,000 plays); compacting old history is in §9.
 
 ## 5. Streaming protocol
 
@@ -369,11 +378,22 @@ Tauri v2 on all three platforms, like reader-sync, with React + Vite for the UI.
 progress, primary actions), the same on the PC and the phone. On Linux there's no system
 title bar: the window controls and drag area sit in the app's own header, in this style.
 
-- **PC (Linux, Windows):** library browsing (albums, artists, tracks, folders), search, queue,
-  now playing, playlists, favorites, devices and pairing, cache settings.
+- **PC (Linux, Windows):** **songs first** (the user mostly plays songs, not albums), so the
+  sidebar reads Songs → Playlists → Albums → Artists. Search, a queue panel, now playing,
+  playlists (made by hand, Liked songs, and automatic ones), devices and pairing, cache
+  settings. A right-click menu on any track (play next, add to queue, add to playlist, like,
+  go to album or artist). Keyboard shortcuts in the app; media keys and the system's
+  now-playing panel through MPRIS (Linux) and SMTC (Windows).
+- **Songs** sort three ways, each ascending or descending: the default (album artist, album,
+  disc, track), by name, and by date added.
+- **Automatic playlists**, computed from the play history (§4) and the index, never stored:
+  *On Repeat* (most played in the last 30 days), *Recently played*, *Recently added* (by the
+  file's modification time on the phone), *Most played*. More can follow (e.g. *Forgotten
+  favorites*: played often, not in months).
 - **Phone (Android):** pairing, the media permission, folder selection, the "Serve music"
-  background toggle with its notification and Pause, and the scan status. It is not a player
-  in v1.
+  background toggle with its notification and Pause, and the scan status. Not a player in
+  the first builds; **the user wants it to be one too** (the same library, playlists and
+  likes, playing its own files locally). That comes after the desktop is polished.
 
 ### Player behavior (v1)
 
@@ -569,7 +589,7 @@ the week.
 - Sync away from home: opt-in iroh relay (self-hosted `iroh-relay` or n0's), with the relay
   URL kept in the replicated address book. With a slow link, the phone transcodes to Opus.
 - The phone as a remote for the PC player (play/pause/skip, queue).
-- Play counts and history (per-device counters that merge cleanly; compaction).
+- Compacting the Loro document's history (play counts overwrite one entry per track).
 - Exclusive/bit-perfect output (WASAPI exclusive mode, ALSA `hw:`), opening the device at the
   track's rate when it supports it.
 - Index deltas, if the full snapshot proves slow.
@@ -660,3 +680,7 @@ Open:
 own task (a seek's wake could cut a frame); play/pause and status no longer wait on a blocked
 decoder; a real-time gapless test added, and gapless on real albums stays to be heard. U1 is
 verified only after the device checklist in STATUS.md.
+
+**2026-10-29, user priorities after U1:** songs-first navigation; shuffle, repeat, keyboard
+and media keys; playlists and likes; automatic playlists like Spotify's *On Repeat* (§4 play
+history, §7).

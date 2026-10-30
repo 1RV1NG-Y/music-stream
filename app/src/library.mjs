@@ -84,3 +84,21 @@ export function formatQuality(t) {
   if (t.sampleRate) parts.push(`${(t.sampleRate / 1000).toString().replace(/\.0$/, '')} kHz`);
   return parts.filter(Boolean).join(' · ');
 }
+
+/** Songs list orders (PLAN.md §7): the album order, by name, by date added; each either way. */
+export const SONG_SORTS = [
+  { id: 'default', label: 'Default' },
+  { id: 'name', label: 'Name' },
+  { id: 'added', label: 'Date added' },
+];
+
+export function sortSongs(albums, sort = 'default', descending = false) {
+  let list = sortTracks(albums);
+  if (sort === 'name') list = [...list].sort((a, b) => collator.compare(a.title, b.title) || collator.compare(a.artist, b.artist));
+  // Newest first reads as "descending"; the album order is the tie-break.
+  else if (sort === 'added') list = list.map((t, i) => [t, i]).sort((a, b) => (a[0].added - b[0].added) || (a[1] - b[1])).map(([t]) => t);
+  return descending ? [...list].reverse() : list;
+}
+
+/** Tracks for a list of ids, skipping any no longer in the library. */
+export const tracksFor = (ids, byId) => ids.map(id => byId.get(id)).filter(Boolean);

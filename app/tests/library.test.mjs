@@ -30,3 +30,20 @@ test('formats', () => {
   assert.equal(formatQuality({ format: 'flac', bitDepth: 24, sampleRate: 96000 }), 'FLAC · 24-bit · 96 kHz');
   assert.equal(formatQuality({ format: 'flac', bitDepth: 16, sampleRate: 44100 }), 'FLAC · 16-bit · 44.1 kHz');
 });
+
+import { sortSongs } from '../src/library.mjs';
+
+test('songs sort by album order, name or date added, either way', () => {
+  const albums = groupAlbums([
+    t('b', { title: 'Beta', album: 'Z', added: 300 }),
+    t('a', { title: 'alpha', album: 'Z', track: 2, added: 100 }),
+    t('c', { title: 'Gamma', album: 'A', added: 200 }),
+  ]);
+  const ids = list => list.map(x => x.id);
+  assert.deepEqual(ids(sortSongs(albums)), ['c', 'b', 'a']);
+  assert.deepEqual(ids(sortSongs(albums, 'default', true)), ['a', 'b', 'c']);
+  assert.deepEqual(ids(sortSongs(albums, 'name')), ['a', 'b', 'c']);
+  assert.deepEqual(ids(sortSongs(albums, 'name', true)), ['c', 'b', 'a']);
+  assert.deepEqual(ids(sortSongs(albums, 'added')), ['a', 'c', 'b']);
+  assert.deepEqual(ids(sortSongs(albums, 'added', true)), ['b', 'c', 'a']);
+});

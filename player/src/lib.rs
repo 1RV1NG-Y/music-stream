@@ -55,8 +55,19 @@ pub trait Provider: Send + Sync + 'static {
     fn prefetch(&self, _item: &Self::Item) {}
 }
 
+/// What happens at the end of a track (PLAN.md §7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Repeat {
+    #[default]
+    Off,
+    All,
+    One,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
+    pub shuffle: bool,
+    pub repeat: Repeat,
     pub index: Option<usize>,
     pub playing: bool,
     pub position_ms: u64,
@@ -80,6 +91,9 @@ enum Cmd<I> {
     Prev,
     Seek(u64),
     Stop,
+    Shuffle(bool),
+    MarkShuffled,
+    Repeat(Repeat),
     Shutdown,
 }
 
@@ -231,6 +245,21 @@ impl<P: Provider> Player<P> {
     }
     pub fn stop(&self) {
         self.send(Cmd::Stop, true);
+    }
+    /// On: the current track moves to the top and everything else is shuffled after it.
+    /// Off: the original order comes back, continuing after the current track.
+    pub fn set_shuffle(&self, on: bool) {
+        self.status.lock().unwrap().shuffle = on;
+        self.send(Cmd::Shuffle(on), false);
+    }
+    /// Shuffle on without reshuffling: for a queue restored in its shuffled order.
+    pub fn mark_shuffled(&self) {
+        self.status.lock().unwrap().shuffle = true;
+        self.send(Cmd::MarkShuffled, false);
+    }
+    pub fn set_repeat(&self, repeat: Repeat) {
+        self.status.lock().unwrap().repeat = repeat;
+        self.send(Cmd::Repeat(repeat), false);
     }
     /// Linear gain, applied in the output callback so it takes effect at once.
     pub fn set_volume(&self, volume: f32) {
@@ -614,6 +643,11 @@ struct Worker<P: Provider> {
     ended: bool,
     /// The current item must be reopened at this position (its read was interrupted).
     reopen_at: Option<u64>,
+    shuffle: bool,
+    repeat: Repeat,
+    /// Each queue entry's place in the unshuffled order, so shuffle can be turned off.
+    keys: Vec<f64>,
+    rng: u64,
     error: Option<String>,
 }
 
@@ -637,6 +671,10 @@ impl<P: Provider> Worker<P> {
             timeline,
             ended: false,
             reopen_at: None,
+            shuffle: false,
+            repeat: Repeat::Off,
+            keys: Vec::new(),
+            rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0x9e37_79b9, |d| d.as_nanos() as u64) | 1,
             error: None,
         }
     }
@@ -796,7 +834,11 @@ impl<P: Provider> Worker<P> {
     fn advance(&mut self) {
         self.current = None;
         let len = self.queue.lock().unwrap().len();
-        let next = self.index.map_or(0, |i| i + 1);
+        let next = match (self.repeat, self.index) {
+            (Repeat::One, Some(i)) => i,
+            (Repeat::All, Some(i)) if i + 1 >= len => 0,
+            (_, i) => i.map_or(0, |i| i + 1),
+        };
         if next >= len {
             self.ended = true;
             self.shared.ended.store(true, Ordering::Relaxed);
@@ -841,7 +883,12 @@ impl<P: Provider> Worker<P> {
                 drop(tl);
                 self.error = None;
                 self.current = Some(dec);
-                if let Some(next) = self.queue.lock().unwrap().get(i + 1).cloned() {
+                let after = match self.repeat {
+                    Repeat::One => Some(i),
+                    Repeat::All => Some(i + 1).filter(|&n| n < self.queue.lock().unwrap().len()).or(Some(0)),
+                    Repeat::Off => Some(i + 1),
+                };
+                if let Some(next) = after.and_then(|n| self.queue.lock().unwrap().get(n).cloned()) {
                     self.provider.prefetch(&next);
                 }
             }
@@ -902,6 +949,8 @@ impl<P: Provider> Worker<P> {
     /// Publishes what only the worker knows; `Player::status` adds the live parts.
     fn publish(&self) {
         let mut st = self.status.lock().unwrap();
+        st.shuffle = self.shuffle;
+        st.repeat = self.repeat;
         st.error = self.error.clone();
         st.output = self.out.as_ref().map(|o| format!("{} · {} Hz", o.name, o.rate)).unwrap_or_default();
     }
@@ -909,6 +958,62 @@ impl<P: Provider> Worker<P> {
     fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
         self.shared.paused.store(!playing, Ordering::Relaxed);
+    }
+
+    /// When the decoder has already moved on to the next track (gapless) while the output still
+    /// plays the one before: (the heard track, its position).
+    fn ahead(&self) -> Option<(usize, u64)> {
+        let (heard, ms) = self.position();
+        match (heard, self.index) {
+            (Some(h), Some(i)) if h != i => Some((h, ms)),
+            _ => None,
+        }
+    }
+
+    /// After a queue edit while the decoder was ahead: what it decoded may no longer be what
+    /// follows, so restart the heard track (now at `heard`) where it is.
+    fn follow_heard(&mut self, heard: usize, at_ms: u64) {
+        self.index = Some(heard);
+        self.restart_at(at_ms);
+    }
+
+    fn random(&mut self) -> u64 {
+        // xorshift64*: plenty for shuffling a queue.
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        self.rng.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    /// The current entry first, then every other entry in a random order.
+    fn shuffle_around_current(&mut self) {
+        let n = self.keys.len();
+        let first = self.index.unwrap_or(0).min(n.saturating_sub(1));
+        let mut rest: Vec<usize> = (0..n).filter(|&i| i != first).collect();
+        for i in (1..rest.len()).rev() {
+            let j = (self.random() % (i as u64 + 1)) as usize;
+            rest.swap(i, j);
+        }
+        let order: Vec<usize> = std::iter::once(first).chain(rest).take(n).collect();
+        self.reorder(&order);
+    }
+
+    /// Puts entry `order[k]` at position `k`, keeping what plays (index and marks) the same.
+    fn reorder(&mut self, order: &[usize]) {
+        let mut new_at = vec![0; order.len()];
+        for (k, &old) in order.iter().enumerate() {
+            new_at[old] = k;
+        }
+        let mut q = self.queue.lock().unwrap();
+        let old_q = std::mem::take(&mut *q);
+        let mut slots: Vec<Option<P::Item>> = old_q.into_iter().map(Some).collect();
+        *q = order.iter().map(|&i| slots[i].take().expect("a permutation")).collect();
+        drop(q);
+        self.keys = order.iter().map(|&i| self.keys[i]).collect();
+        self.index = self.index.map(|i| new_at[i]);
+        let mut tl = self.timeline.lock().unwrap();
+        tl.marks.iter_mut().for_each(|m| m.index = new_at[m.index]);
+        tl.index = self.index;
     }
 
     /// Handles a command. `None`: shut down; `Some(true)`: the current item must be reopened.
@@ -919,7 +1024,11 @@ impl<P: Provider> Worker<P> {
             Cmd::SetQueue(items, start, play) => {
                 let n = items.len();
                 *self.queue.lock().unwrap() = items;
+                self.keys = (0..n).map(|i| i as f64).collect();
                 self.index = (n > 0).then(|| start.min(n - 1));
+                if self.shuffle && n > 0 {
+                    self.shuffle_around_current();
+                }
                 self.set_playing(play && n > 0);
                 self.restart_at(0);
             }
@@ -929,6 +1038,12 @@ impl<P: Provider> Worker<P> {
                 let n = items.len();
                 q.splice(at..at, items);
                 drop(q);
+                // Unshuffled, inserted tracks keep their place: right after the entry before
+                // them (play next follows the current track), or at the end.
+                let before = if at == 0 { -1.0 } else { self.keys[at - 1] };
+                let after = self.keys.iter().copied().filter(|k| *k > before).fold(f64::INFINITY, f64::min);
+                let step = if after.is_finite() { (after - before) / (n as f64 + 1.0) } else { 1.0 };
+                self.keys.splice(at..at, (1..=n).map(|k| before + step * k as f64));
                 if let Some(i) = self.index.filter(|&i| at <= i) {
                     self.index = Some(i + n);
                     self.timeline.lock().unwrap().marks.iter_mut().filter(|m| m.index >= at).for_each(|m| m.index += n);
@@ -936,13 +1051,31 @@ impl<P: Provider> Worker<P> {
                 if self.index.is_none() && n > 0 {
                     self.index = Some(at);
                     self.restart_at(0);
+                } else if let Some((heard, ms)) = self.ahead() {
+                    self.follow_heard(if at <= heard { heard + n } else { heard }, ms);
                 }
             }
             Cmd::Remove(at) => {
                 if at >= len {
                     return Some(false);
                 }
+                let ahead = self.ahead();
                 self.queue.lock().unwrap().remove(at);
+                self.keys.remove(at);
+                if let Some((heard, ms)) = ahead {
+                    if heard == at {
+                        // The track being heard was removed: play what took its place.
+                        self.index = Some(at);
+                        if at >= len - 1 {
+                            self.index = None;
+                            self.set_playing(false);
+                        }
+                        self.restart_at(0);
+                    } else {
+                        self.follow_heard(if at < heard { heard - 1 } else { heard }, ms);
+                    }
+                    return Some(false);
+                }
                 match self.index {
                     Some(i) if i == at => {
                         // Removing what plays: play what took its place (or stop at the end).
@@ -965,10 +1098,13 @@ impl<P: Provider> Worker<P> {
                 if from >= len || to >= len || from == to {
                     return Some(false);
                 }
+                let ahead = self.ahead();
                 let mut q = self.queue.lock().unwrap();
                 let item = q.remove(from);
                 q.insert(to, item);
                 drop(q);
+                let key = self.keys.remove(from);
+                self.keys.insert(to, key);
                 let remap = |i: usize| {
                     if i == from {
                         to
@@ -982,7 +1118,9 @@ impl<P: Provider> Worker<P> {
                 };
                 self.index = self.index.map(remap);
                 self.timeline.lock().unwrap().marks.iter_mut().for_each(|m| m.index = remap(m.index));
-                // The track after the current one may have changed: gapless follows the queue.
+                if let Some((heard, ms)) = ahead {
+                    self.follow_heard(remap(heard), ms);
+                }
             }
             Cmd::Jump(i) => {
                 if i < len {
@@ -1004,9 +1142,13 @@ impl<P: Provider> Worker<P> {
             Cmd::Pause => self.set_playing(false),
             Cmd::Next => {
                 let (shown, _) = self.position();
-                let next = shown.map_or(0, |i| i + 1);
+                let mut next = shown.map_or(0, |i| i + 1);
+                if next >= len && self.repeat == Repeat::All {
+                    next = 0;
+                }
                 if next < len {
                     self.index = Some(next);
+                    self.set_playing(true);
                     self.restart_at(0);
                 }
             }
@@ -1014,7 +1156,13 @@ impl<P: Provider> Worker<P> {
                 let (shown, pos) = self.position();
                 let i = shown.unwrap_or(0);
                 // Past the first seconds, "previous" restarts the track.
-                let target = if pos > 3000 || i == 0 { i } else { i - 1 };
+                let target = if pos > 3000 {
+                    i
+                } else if i == 0 {
+                    if self.repeat == Repeat::All { len.saturating_sub(1) } else { 0 }
+                } else {
+                    i - 1
+                };
                 if target < len {
                     self.index = Some(target);
                     self.restart_at(0);
@@ -1027,6 +1175,31 @@ impl<P: Provider> Worker<P> {
                     self.restart_at(ms);
                 }
             }
+            Cmd::Shuffle(on) => {
+                if on != self.shuffle {
+                    self.shuffle = on;
+                    // The decoder may already be into the next track (gapless); what matters is
+                    // the track being heard. If it's ahead, what it decoded follows the old
+                    // order, so restart the heard track where it is.
+                    let (heard, at_ms) = self.position();
+                    let ahead = heard.is_some() && heard != self.index;
+                    if ahead {
+                        self.index = heard;
+                    }
+                    if on {
+                        self.shuffle_around_current();
+                    } else {
+                        let mut order: Vec<usize> = (0..self.keys.len()).collect();
+                        order.sort_by(|&a, &b| self.keys[a].total_cmp(&self.keys[b]));
+                        self.reorder(&order);
+                    }
+                    if ahead {
+                        self.restart_at(at_ms);
+                    }
+                }
+            }
+            Cmd::MarkShuffled => self.shuffle = true,
+            Cmd::Repeat(r) => self.repeat = r,
             Cmd::Stop => {
                 self.set_playing(false);
                 self.restart_at(0);
