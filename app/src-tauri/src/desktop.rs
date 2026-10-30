@@ -4,7 +4,6 @@
 //! URL scheme.
 
 use std::{
-    collections::{HashMap, HashSet},
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{Arc, Mutex, atomic::AtomicBool},
@@ -14,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use musicstream_core::{
     Node,
-    library::{Index, Track, TrackId, TrackRef, hex, parse_hex},
+    library::{Track, TrackId, hex, parse_hex},
     remote::{Remote, TrackSource},
 };
 use player::{MediaSource, Opened, OutputKind, Player, Provider, Repeat};
@@ -266,103 +265,9 @@ impl Music {
             .collect()
     }
 
-    fn refs(&self, ids: &[String]) -> Result<Vec<TrackRef>> {
-        Ok(self.tracks(ids)?.iter().map(Track::reference).collect())
-    }
 }
 
 // ---- Views ---------------------------------------------------------------------------------
-
-/// Plays of one track, summed over every device.
-#[derive(Default, Clone)]
-struct Stats {
-    count: u64,
-    last: u64,
-    recent: Vec<u32>,
-}
-
-fn play_stats(node: &Node, index: &Index) -> HashMap<TrackId, Stats> {
-    let mut out: HashMap<TrackId, Stats> = HashMap::new();
-    for (_, id, rec) in node.plays() {
-        let r = TrackRef { id, fallback: rec.fallback.clone() };
-        let Some(t) = index.resolve_ref(&r) else { continue };
-        let s = out.entry(t.id).or_default();
-        s.count += rec.count;
-        s.last = s.last.max(rec.last);
-        s.recent.extend(rec.recent);
-    }
-    out
-}
-
-fn liked(node: &Node, index: &Index) -> Vec<(TrackId, String)> {
-    let mut seen = HashSet::new();
-    let mut out: Vec<(TrackId, String)> = node
-        .favorites()
-        .into_iter()
-        .filter_map(|(r, since)| index.resolve_ref(&r).map(|t| (t.id, since)))
-        .filter(|(id, _)| seen.insert(*id))
-        .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
-    out
-}
-
-fn track_view(t: &Track, cached: bool, liked: bool, stats: Option<&Stats>) -> Value {
-    json!({
-        "id": hex(&t.id),
-        "title": t.title,
-        "artist": t.artist,
-        "album": t.album,
-        "albumArtist": t.album_artist,
-        "disc": t.disc,
-        "track": t.track,
-        "year": t.year,
-        "genre": t.genre,
-        "durationMs": t.duration_ms,
-        "format": t.format,
-        "sampleRate": t.sample_rate,
-        "bitDepth": t.bit_depth,
-        "channels": t.channels,
-        "size": t.size(),
-        "path": t.path,
-        "art": t.art.map(|a| hex(&a)),
-        "cached": cached,
-        "liked": liked,
-        "plays": stats.map_or(0, |s| s.count),
-        "lastPlayed": stats.map_or(0, |s| s.last),
-        // The file's modification time on the phone: when it was added, near enough.
-        "added": t.fp.mtime.0,
-    })
-}
-
-const DAY_MS: u64 = 86_400_000;
-
-/// The automatic playlists (PLAN.md §7), as track ids in order.
-fn smart_playlists(index: &Index, stats: &HashMap<TrackId, Stats>) -> Vec<Value> {
-    let today = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64) / DAY_MS) as u32;
-    let ids = |v: Vec<(&TrackId, &Stats)>| -> Vec<String> { v.into_iter().map(|(id, _)| hex(id)).collect() };
-    let mut on_repeat: Vec<(&TrackId, &Stats, usize)> = stats
-        .iter()
-        .map(|(id, s)| (id, s, s.recent.iter().filter(|d| **d + 30 >= today).count()))
-        .filter(|(_, _, n)| *n >= 2)
-        .collect();
-    on_repeat.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.last.cmp(&a.1.last)));
-    let mut recent: Vec<(&TrackId, &Stats)> = stats.iter().collect();
-    recent.sort_by(|a, b| b.1.last.cmp(&a.1.last));
-    let mut most: Vec<(&TrackId, &Stats)> = stats.iter().filter(|(_, s)| s.count >= 2).collect();
-    most.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(b.1.last.cmp(&a.1.last)));
-    let mut added: Vec<&Track> = index.tracks.iter().collect();
-    added.sort_by(|a, b| b.fp.mtime.cmp(&a.fp.mtime));
-    vec![
-        json!({ "id": "on-repeat", "name": "On Repeat", "hint": "Your most played songs of the last 30 days.",
-                "tracks": on_repeat.into_iter().take(50).map(|(id, _, _)| hex(id)).collect::<Vec<_>>() }),
-        json!({ "id": "recently-played", "name": "Recently played", "hint": "What you listened to last.",
-                "tracks": ids(recent.into_iter().take(100).collect()) }),
-        json!({ "id": "recently-added", "name": "Recently added", "hint": "The newest songs on your phone.",
-                "tracks": added.into_iter().take(100).map(|t| hex(&t.id)).collect::<Vec<_>>() }),
-        json!({ "id": "most-played", "name": "Most played", "hint": "Your most played songs of all time.",
-                "tracks": ids(most.into_iter().take(100).collect()) }),
-    ]
-}
 
 fn repeat_name(r: Repeat) -> &'static str {
     match r {
@@ -442,60 +347,15 @@ struct RepeatParams {
     mode: RepeatMode,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PlaylistParams {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    ids: Vec<String>,
-    #[serde(default)]
-    at: Option<usize>,
-    #[serde(default)]
-    positions: Vec<usize>,
-    #[serde(default)]
-    from: usize,
-    #[serde(default)]
-    to: usize,
-}
-
 pub async fn dispatch(app: &AppHandle, method: &str, p: Value) -> Result<Value> {
     let music = app.state::<Music>();
     let player = &music.player;
-    let node = &music.node;
+    let index = music.remote.index();
+    let cached = music.remote.cached();
+    if let Some(result) = crate::userdata::dispatch(&music.node, &index, |t| cached.contains(&(t.id, t.rev)), method, p.clone()).await {
+        return result;
+    }
     Ok(match method {
-        "library" => {
-            let index = music.remote.index();
-            let cached = music.remote.cached();
-            let stats = play_stats(node, &index);
-            let liked: HashSet<TrackId> = liked(node, &index).into_iter().map(|(id, _)| id).collect();
-            let tracks: Vec<Value> =
-                index.tracks.iter().map(|t| track_view(t, cached.contains(&(t.id, t.rev)), liked.contains(&t.id), stats.get(&t.id))).collect();
-            json!({ "tracks": tracks, "generation": index.generation })
-        }
-        "playlists" => {
-            let index = music.remote.index();
-            let stats = play_stats(node, &index);
-            let user: Vec<Value> = node
-                .playlists()
-                .into_iter()
-                .map(|pl| {
-                    let entries: Vec<Value> = pl
-                        .entries
-                        .iter()
-                        .map(|r| match index.resolve_ref(r) {
-                            Some(t) => json!({ "id": hex(&t.id) }),
-                            None => json!({ "id": null, "title": r.fallback.title, "artist": r.fallback.album_artist }),
-                        })
-                        .collect();
-                    json!({ "id": pl.id, "name": pl.name, "created": pl.created, "entries": entries })
-                })
-                .collect();
-            let liked: Vec<String> = liked(node, &index).into_iter().map(|(id, _)| hex(&id)).collect();
-            json!({ "liked": liked, "smart": smart_playlists(&index, &stats), "user": user })
-        }
         "remoteStatus" => serde_json::to_value(music.remote.status())?,
         "refresh" => {
             music.remote.refresh();
@@ -597,55 +457,6 @@ pub async fn dispatch(app: &AppHandle, method: &str, p: Value) -> Result<Value> 
             player.set_repeat(p.mode.into());
             music.saved.lock().unwrap().repeat = p.mode;
             music.save();
-            Value::Null
-        }
-        // ---- Playlists and Liked songs (replicated through the phone) ----
-        "createPlaylist" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            let refs = music.refs(&p.ids)?;
-            json!({ "id": node.create_playlist(p.name, refs).await? })
-        }
-        "renamePlaylist" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            node.rename_playlist(p.id, p.name).await?;
-            Value::Null
-        }
-        "deletePlaylist" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            node.delete_playlist(p.id).await?;
-            Value::Null
-        }
-        "playlistAdd" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            let refs = music.refs(&p.ids)?;
-            node.playlist_add(p.id, refs, p.at).await?;
-            Value::Null
-        }
-        "playlistRemove" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            node.playlist_remove(p.id, p.positions).await?;
-            Value::Null
-        }
-        "playlistMove" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            node.playlist_move(p.id, p.from, p.to).await?;
-            Value::Null
-        }
-        "like" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            for r in music.refs(&p.ids)? {
-                node.like(r).await?;
-            }
-            Value::Null
-        }
-        "unlike" => {
-            let p: PlaylistParams = serde_json::from_value(p)?;
-            let index = music.remote.index();
-            let targets: HashSet<TrackId> = music.tracks(&p.ids)?.iter().map(|t| t.id).collect();
-            // Every stored key that resolves to one of these tracks.
-            let keys: Vec<String> =
-                node.favorites().into_iter().filter(|(r, _)| index.resolve_ref(r).is_some_and(|t| targets.contains(&t.id))).map(|(r, _)| r.id).collect();
-            node.unlike(keys).await?;
             Value::Null
         }
         other => bail!("unknown method {other}"),

@@ -13,12 +13,17 @@ mod desktop;
 mod media;
 #[cfg(any(target_os = "android", test))]
 mod node_slot;
+mod userdata;
 
-use musicstream_core::{Event, Node};
+use musicstream_core::Node;
+#[cfg(not(target_os = "android"))]
+use musicstream_core::Event;
 #[cfg(not(target_os = "android"))]
 use musicstream_core::NodeConfig;
 use serde_json::Value;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
+#[cfg(not(target_os = "android"))]
+use tauri::Emitter;
 
 /// The node, or why it couldn't start (the UI shows it instead of the app crashing).
 #[cfg(not(target_os = "android"))]
@@ -57,15 +62,15 @@ async fn music(app: tauri::AppHandle, state: State<'_, AppNode>, method: String,
         }
         desktop::dispatch(&app, &method, params).await.map_err(|e| format!("{e:#}"))
     }
-    #[cfg(not(desktop))]
+    #[cfg(target_os = "android")]
     {
-        let _ = (app, params);
-        let node = node(&state)?;
-        match method.as_str() {
-            "phoneStatus" => Ok(serde_json::to_value(node.library_status()).unwrap_or_default()),
-            "rescan" => node.rescan().await.map(|r| serde_json::to_value(r).unwrap_or_default()).map_err(|e| format!("{e:#}")),
-            other => Err(format!("unknown method {other}")),
-        }
+        let _ = &state;
+        android::dispatch(&app, &method, params).await.map_err(|e| format!("{e:#}"))
+    }
+    #[cfg(all(mobile, not(target_os = "android")))]
+    {
+        let _ = (app, state, params);
+        Err(format!("unknown method {method}"))
     }
 }
 
@@ -99,7 +104,7 @@ pub fn run() {
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(android::plugin());
+    let builder = builder.plugin(android::plugin()).register_asynchronous_uri_scheme_protocol("art", android::art_protocol);
     builder
         .setup(|app| {
             #[cfg(target_os = "android")]

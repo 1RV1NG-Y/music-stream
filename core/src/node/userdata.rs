@@ -72,3 +72,24 @@ impl Node {
         model::read_plays(&self.0.state.lock().unwrap().doc)
     }
 }
+
+impl Node {
+    /// Hidden songs (references) and folders ("<volume>/<dir>").
+    pub fn hidden(&self) -> (Vec<TrackRef>, Vec<String>) {
+        let st = self.0.state.lock().unwrap();
+        (model::read_hidden(&st.doc), model::read_hidden_folders(&st.doc))
+    }
+
+    pub async fn hide(&self, tracks: Vec<TrackRef>) -> Result<()> {
+        self.mutate(move |doc| tracks.iter().try_for_each(|r| model::hide(doc, r))).await
+    }
+
+    /// `ids`: every stored key that resolves to the tracks shown again.
+    pub async fn unhide(&self, ids: Vec<String>) -> Result<()> {
+        self.mutate(move |doc| model::unhide(doc, &ids)).await
+    }
+
+    pub async fn set_folder_hidden(&self, folder: String, hidden: bool) -> Result<()> {
+        self.mutate(move |doc| model::set_folder_hidden(doc, &folder, hidden)).await
+    }
+}

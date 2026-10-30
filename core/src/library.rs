@@ -347,6 +347,11 @@ impl Library {
         self.dir.join("art").join(hex(hash))
     }
 
+    /// Where a track's file is on this device.
+    pub fn file_path(&self, track: &Track) -> Option<PathBuf> {
+        self.full_path(track)
+    }
+
     fn full_path(&self, track: &Track) -> Option<PathBuf> {
         let root = self.roots.iter().find(|r| r.volume == track.volume)?;
         Some(track.path.split('/').fold(root.path.clone(), |p, part| p.join(part)))

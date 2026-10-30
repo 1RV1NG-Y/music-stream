@@ -206,6 +206,13 @@ favorites/<trackId>        { since, fallback }        (map; remove = unfavorite)
 A favorite's key and `fallback` together are a `TrackRef`, resolved like a playlist entry
 (§3). Unfavoriting removes every key that resolves to that track.
 
+**Hidden** songs and folders (§7):
+
+```
+hidden/<trackId>              { since, fallback }      (a TrackRef; remove = show again)
+hiddenFolders/<volume>/<dir>  since                    (every track under that folder)
+```
+
 **Play history** (for the automatic playlists, §7) uses per-device counters, so it merges
 without conflicts and stays bounded:
 
@@ -390,10 +397,20 @@ title bar: the window controls and drag area sit in the app's own header, in thi
   *On Repeat* (most played in the last 30 days), *Recently played*, *Recently added* (by the
   file's modification time on the phone), *Most played*. More can follow (e.g. *Forgotten
   favorites*: played often, not in months).
-- **Phone (Android):** pairing, the media permission, folder selection, the "Serve music"
-  background toggle with its notification and Pause, and the scan status. Not a player in
-  the first builds; **the user wants it to be one too** (the same library, playlists and
-  likes, playing its own files locally). That comes after the desktop is polished.
+- **Phone (Android):** a player too (the user's request, after the desktop polish): the same
+  library, playlists, likes and automatic playlists, playing its own files directly. Playback
+  uses Android's Media3 (ExoPlayer in a `MediaSessionService`), not the PC's Rust player:
+  lock-screen and notification controls, headset and Bluetooth buttons, audio focus (calls,
+  other apps) and "headphones unplugged" come with it, as does gapless playback of a
+  playlist. Shuffle and repeat are Media3's own. Plays are counted in the service and
+  recorded through the node (JNI), so they count with the screen off. It still serves its
+  library to the PCs (the service is both `connectedDevice` and `mediaPlayback`), with
+  pairing, the background toggle and the scan status under a Devices tab.
+- **Hiding:** songs that aren't music (voice notes, downloaded audio) can be hidden one by
+  one or by folder, on the PC or the phone, without touching the files. Hidden songs and
+  folders are user data (§4), so they sync; a Hidden page brings them back. A **Folders**
+  page lists every folder with audio, with a switch per folder: the user decides which folders
+  count as the library (PLAN §10's open question, settled: all folders, minus the ones switched off).
 
 ### Player behavior (v1)
 

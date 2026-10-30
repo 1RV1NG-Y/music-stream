@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Disc3, Ellipsis, Flame, Heart, History, Keyboard, ListEnd, ListMusic,
   ListPlus, Loader2, Music2, Pause, Pencil, Play, Plus, Repeat, Repeat1, Search, Shuffle, SkipBack, SkipForward, Smartphone,
-  Sparkles, Trash2, TrendingUp, Users, Volume1, Volume2, VolumeX, X, HardDriveDownload, GripVertical,
+  Sparkles, Trash2, TrendingUp, Users, Volume1, Volume2, VolumeX, X, HardDriveDownload, GripVertical, EyeOff, Eye, Folder, FolderX,
 } from 'lucide-react';
 import { artUrl, errorText, music, on } from './api.mjs';
 import {
@@ -55,7 +55,10 @@ export default function Desktop() {
     try { setError(''); return await music(method, params); } catch (e) { setError(errorText(e)); }
   }, []);
 
-  const albums = useMemo(() => groupAlbums(tracks ?? []), [tracks]);
+  // Hidden songs stay known (the queue may hold one) but no list shows them.
+  const visible = useMemo(() => (tracks ?? []).filter(t => !t.hidden), [tracks]);
+  const hiddenTracks = useMemo(() => (tracks ?? []).filter(t => t.hidden), [tracks]);
+  const albums = useMemo(() => groupAlbums(visible), [visible]);
   const artists = useMemo(() => groupArtists(albums), [albums]);
   const byId = useMemo(() => new Map((tracks ?? []).map(t => [t.id, t])), [tracks]);
   const queue = useMemo(() => tracksFor(player?.queue ?? [], byId), [player, byId]);
@@ -77,6 +80,9 @@ export default function Desktop() {
     toggleLike,
     openAlbum: key => go({ name: 'album', key, back: view }),
     openArtist: name => go({ name: 'artist', key: name.toLowerCase() }),
+    hide: async list => { await run('hide', { ids: ids(list) }); loadLibrary(); loadLists(); },
+    unhide: async list => { await run('unhide', { ids: ids(list) }); loadLibrary(); loadLists(); },
+    setFolder: async (folder, hidden) => { await run('setFolderHidden', { folder, hidden }); loadLibrary(); loadLists(); },
     menu: (e, list, extra) => { e.preventDefault(); e.stopPropagation(); setMenu({ at: { x: e.clientX, y: e.clientY }, tracks: list, extra }); },
     currentId: current?.id,
     playing: player?.playing,
@@ -155,6 +161,8 @@ export default function Desktop() {
           <AlbumGrid albums={artist.albums} actions={{ ...actions, openAlbum: key => go({ name: 'album', key, back: view }) }} /></section>
       : <p className="empty">Not found.</p>;
   } else if (view.name === 'artists') content = <ArtistList artists={artists} onOpen={key => go({ name: 'artist', key })} />;
+  else if (view.name === 'folders') content = <FoldersPage actions={actions} tracks={tracks} />;
+  else if (view.name === 'hidden') content = <HiddenPage tracks={hiddenTracks} actions={actions} onFolders={() => go({ name: 'folders' })} />;
   else content = <section className="page"><h1 className="page-title">Albums</h1><AlbumGrid albums={albums} actions={actions} /></section>;
 
   const isView = (name, id) => view.name === name && (id === undefined || view.id === id);
@@ -184,7 +192,7 @@ export default function Desktop() {
       </header>
 
       <nav className="sidebar">
-        {navItem(isView('songs'), Music2, 'Songs', () => go({ name: 'songs' }), tracks ? <span className="count">{tracks.length}</span> : null)}
+        {navItem(isView('songs'), Music2, 'Songs', () => go({ name: 'songs' }), tracks ? <span className="count">{visible.length}</span> : null)}
         <div className="nav-section">
           <span>Playlists</span>
           <IconButton icon={Plus} label="New playlist" onClick={() => setNaming({})} />
@@ -201,6 +209,8 @@ export default function Desktop() {
         <div className="nav-section"><span>Library</span></div>
         {navItem(isView('albums') || isView('album'), Disc3, 'Albums', () => go({ name: 'albums' }))}
         {navItem(isView('artists') || isView('artist'), Users, 'Artists', () => go({ name: 'artists' }))}
+        {navItem(isView('folders'), Folder, 'Folders', () => go({ name: 'folders' }))}
+        {hiddenTracks.length > 0 && navItem(isView('hidden'), EyeOff, 'Hidden', () => go({ name: 'hidden' }), <span className="count">{hiddenTracks.length}</span>)}
         <div className="sidebar-foot">
           {remote && <span title="Songs you’ve played stay here, so they start at once and play without the phone. When it’s full, the songs played longest ago make room.">{(remote.cacheBytes / 1e9).toFixed(1)} of {(remote.cacheLimit / 1e9).toFixed(1)} GB cached</span>}
         </div>
@@ -366,13 +376,13 @@ function AlbumPage({ album, actions, onBack }) {
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
-function TrackTable({ tracks, actions, numbered, showAlbum, showArtist, showAdded, discs, onRemove, onMove }) {
+function TrackTable({ tracks, actions, numbered, showAlbum, showArtist, showAdded, showFolder, discs, onRemove, onMove }) {
   const [dragOver, setDragOver] = useState(null);
   const dragFrom = useRef(null);
   let lastDisc = null;
   const columns = ['col-num', 'col-title', showAlbum && 'col-album', showAdded && 'col-added', 'col-actions', 'col-time'].filter(Boolean);
   return (
-    <div className={`tracks cols-${columns.length} ${showAlbum ? 'has-album' : ''} ${showAdded ? 'has-added' : ''}`} role="table">
+    <div className={`tracks cols-${columns.length} ${showAlbum || showFolder ? 'has-album' : ''} ${showAdded ? 'has-added' : ''}`} role="table">
       {tracks.map((t, i) => {
         const discRow = discs && t.disc !== lastDisc ? <div className="disc-row" key={`disc-${t.disc}`}>Disc {t.disc || 1}</div> : null;
         lastDisc = t.disc;
@@ -400,6 +410,7 @@ function TrackTable({ tracks, actions, numbered, showAlbum, showArtist, showAdde
                 </span>
               </span>
               {showAlbum && <button type="button" className="col-album link" onClick={() => actions.openAlbum(albumKey(t))}>{t.album}</button>}
+              {showFolder && <span className="col-album folder-path" title={t.path}>{folderLabel(t.folder)}</span>}
               {showAdded && <span className="col-added">{t.added ? dateFormat.format(new Date(t.added * 1000)) : ''}</span>}
               <span className="col-actions">
                 {t.cached && <HardDriveDownload size={14} className="cached-mark" aria-label="Available offline" />}
@@ -488,6 +499,13 @@ function TrackMenu({ menu, lists, actions, run, reload, onNew, onRenamePlaylist,
         {one && item(Disc3, 'Go to album', () => actions.openAlbum(albumKey(one)))}
         {one && item(Users, 'Go to artist', () => actions.openArtist(one.albumArtist || one.artist))}
         {extra?.remove && item(Trash2, 'Remove from this playlist', extra.remove, 'danger')}
+        <div className="menu-sep" />
+        {tracks.every(t => t.hidden)
+          ? item(Eye, 'Show again', () => actions.unhide(tracks))
+          : item(EyeOff, tracks.length > 1 ? `Hide ${tracks.length} songs` : 'Hide song', () => actions.hide(tracks))}
+        {one && !one.hidden && item(FolderX, `Hide folder “${folderName(one.folder)}”`, () => {
+          if (confirm(`Hide every song in “${folderLabel(one.folder)}” and its subfolders? Nothing is deleted; switch it back on under Folders.`)) actions.setFolder(one.folder, true);
+        })}
       </>}
     </div>
   );
@@ -645,3 +663,65 @@ function PlayerBar({ player, track, run, actions, queueOpen, onOpenAlbum, onQueu
   );
 }
 
+
+const folderName = f => f.split('/').pop() || f;
+/** "external_primary/Music/Live" → "Music/Live" (internal storage is the default). */
+const folderLabel = f => {
+  const [volume, ...rest] = f.split('/');
+  const path = rest.join('/');
+  return volume === 'external_primary' ? (path || 'Internal storage') : `${volume}${path ? `/${path}` : ''}`;
+};
+
+/** Which folders count as the library: every folder with audio, each with a switch. */
+function FoldersPage({ actions, tracks }) {
+  const [data, setData] = useState(null);
+  useEffect(() => { music('folders').then(setData, () => {}); }, [tracks]);
+  if (!data) return <section className="page"><h1 className="page-title">Folders</h1><p className="empty">Loading…</p></section>;
+  const rows = data.folders.filter(f => f.folder.includes('/'));
+  return (
+    <section className="page">
+      <div className="list-head">
+        <div className="list-icon"><Folder size={40} /></div>
+        <div>
+          <small className="kicker">Library</small>
+          <h1>Folders</h1>
+          <p className="page-sub">The folders on your phone that hold audio. Switch one off to leave its songs, and its subfolders’, out of the library everywhere. Nothing is deleted.</p>
+        </div>
+      </div>
+      <div className="folders">
+        {rows.map(f => {
+          const depth = f.folder.split('/').length - 2;
+          const inherited = f.off && !f.switchedOff;
+          return (
+            <label key={f.folder} className={`folder-row ${f.off ? 'off' : ''}`} style={{ paddingLeft: 12 + depth * 22 }}>
+              <Folder size={16} className="folder-icon" />
+              <span className="folder-name">{folderName(folderLabel(f.folder))}</span>
+              <span className="folder-count">{f.total} {f.total === 1 ? 'song' : 'songs'}{f.songs !== f.total ? ` · ${f.songs} here` : ''}</span>
+              <input type="checkbox" role="switch" checked={!f.off} disabled={inherited} title={inherited ? 'A folder above this one is switched off' : ''}
+                onChange={e => actions.setFolder(f.folder, !e.target.checked)} />
+            </label>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function HiddenPage({ tracks, actions, onFolders }) {
+  return (
+    <section className="page">
+      <div className="list-head">
+        <div className="list-icon"><EyeOff size={40} /></div>
+        <div>
+          <small className="kicker">Library</small>
+          <h1>Hidden</h1>
+          <p className="page-sub">{tracks.length} songs left out of the library, one by one or by folder. They stay on your phone.</p>
+        </div>
+      </div>
+      <div className="toolbar-row">
+        <button type="button" onClick={onFolders}><Folder size={16} /> Folders</button>
+      </div>
+      <TrackTable tracks={tracks} actions={actions} showArtist showFolder />
+    </section>
+  );
+}

@@ -64,8 +64,22 @@ favorites arrive with `TrackRef` (PLAN §3–§4).
 | Media keys and the desktop's now-playing panel (MPRIS; SMTC code path for Windows untested) | `app/src-tauri/src/media.rs` | registered on the session bus; `playerctl -p music_stream status` answers |
 | UI: songs-first sidebar (Songs, Playlists, Albums, Artists); Songs sort Default / Name / Date added, each up or down; right-click / ⋯ menu; drag to reorder playlists and the queue, drag songs onto a sidebar playlist; queue side panel; shuffle, repeat and like in the player bar; keyboard shortcuts with a `?` sheet | `app/src/` | `npm test` (sorting); the UI itself can't be screenshotted here (GNOME refuses), so the user's look is the check |
 
-Still to come: the phone as a player too (after the desktop polish), Opus (4 songs), naming
-the 2 unreadable files, Windows checks.
+## Phone player, hiding and folders (2026-10-30; installed on Linux and the S22)
+
+| Piece | Where | Verified by |
+|---|---|---|
+| Hidden songs and folders, synced (`hidden`, `hiddenFolders`); shared views (library, playlists, automatic playlists, folders) built the same from the PC's cached index or the phone's own | `core/src/model.rs`, `node/userdata.rs`, `core/src/views.rs` | folder test (counts, subfolders, prefix not a parent); 36 Rust tests pass |
+| Shared `music` commands for both platforms (library, playlists, likes, hide, folders) | `app/src-tauri/src/userdata.rs` | desktop and Android builds |
+| Desktop: Hide song / Hide folder in the menu; **Folders** page (switch per folder, subfolders follow) and **Hidden** page | `app/src/Desktop.jsx` | builds; not yet tried by the user |
+| **Phone player:** Media3 ExoPlayer in a `MediaSessionService` (lock screen, notification, headset/Bluetooth, audio focus, unplugged); `PlayerPlugin` commands in play order; plays counted in the service and recorded via JNI | `gen/android/.../PlayerService.kt`, `PlayerPlugin.kt`, `src-tauri/src/android.rs` | on the S22 over adb: a tapped song plays (`dumpsys media_session`: PLAYING with title/artist), a system media-key pause pauses it; the phone kept serving the PC meanwhile. **Play counting on the phone not yet seen working** (needs half a song) |
+| Phone UI: tabs Songs / Playlists / Albums / Artists / More; sort chips; mini player; Now Playing (cover, like, seek, shuffle, repeat, queue); ⋯ / long-press action sheet (incl. hide); More: serving status, scan, Folders, Hidden, Devices, Background serving | `app/src/Phone.jsx` | screenshots on the S22: Songs with art, mini player, Now Playing, More, Folders (Alarms 1, Download 12 / Mornye 11, Movies 9, Music 351) |
+
+Known gaps: with shuffle on, Media3 puts "Play next" songs at a random place in the shuffled
+order (needs a custom shuffle order in the service); queue reordering on the phone only with
+shuffle off; two notifications while playing and serving (could be merged).
+
+Still to come: Opus on the PC (4 songs; the phone plays Opus natively but the index skips
+`.opus`), naming the 2 unreadable files, Windows checks.
 
 U1 cut-downs (as PLAN §8 says): whole-track cache instead of segment files; folder walk instead
 of MediaStore notifications (rescan every 5 min, on start, and on "Scan again"); no playlists,

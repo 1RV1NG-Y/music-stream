@@ -10,6 +10,7 @@ pub mod proto;
 pub mod remote;
 pub mod rpc;
 pub mod store;
+pub mod views;
 
 pub use iroh::EndpointId;
 pub use node::{DeviceStatus, Event, IndexReply, Invite, Node, NodeConfig, Outgoing, PairResult, ReadEvent, ReadStream, Status};

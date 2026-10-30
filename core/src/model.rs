@@ -8,6 +8,8 @@
 //! - `playlists`: playlist id → map { `name`, `created`, `entries`: movable list of JSON
 //!   [`TrackRef`] }. Order is the user's; concurrent edits on two PCs merge.
 //! - `favorites`: track id → JSON { `since`, `fallback` } (Liked songs; remove = unlike).
+//! - `hidden`: track id → JSON { `since`, `fallback` }; `hiddenFolders`: "<volume>/<dir>" →
+//!   time. Hidden songs stay in the index and on the phone; the views leave them out.
 //! - `plays`: device id → map of track id → JSON [`PlayRecord`]. Each device writes only its
 //!   own map, one entry per track, so counts merge without conflicts (PLAN.md §4).
 
@@ -26,6 +28,8 @@ pub const LIBRARY: &str = "library";
 pub const PLAYLISTS: &str = "playlists";
 pub const FAVORITES: &str = "favorites";
 pub const PLAYS: &str = "plays";
+pub const HIDDEN: &str = "hidden";
+pub const HIDDEN_FOLDERS: &str = "hiddenFolders";
 
 /// Plays remembered per track and device, for "in the last 30 days" lists.
 const RECENT_PLAYS: usize = 32;
@@ -289,6 +293,51 @@ pub fn unlike(doc: &LoroDoc, ids: &[String]) -> Result<()> {
         if doc.get_map(FAVORITES).get(id).is_some() {
             doc.get_map(FAVORITES).delete(id)?;
         }
+    }
+    Ok(())
+}
+
+// ---- Hidden songs and folders ---------------------------------------------------------------
+
+pub fn read_hidden(doc: &LoroDoc) -> Vec<TrackRef> {
+    let m = doc.get_map(HIDDEN);
+    m.keys().filter_map(|k| json_value::<Favorite>(&m, &k).map(|f| TrackRef { id: k.to_string(), fallback: f.fallback })).collect()
+}
+
+pub fn hide(doc: &LoroDoc, r: &TrackRef) -> Result<()> {
+    if doc.get_map(HIDDEN).get(&r.id).is_none() {
+        doc.get_map(HIDDEN).insert(&r.id, serde_json::to_string(&Favorite { since: now_iso(), fallback: r.fallback.clone() })?)?;
+    }
+    Ok(())
+}
+
+/// Removes these keys (every key that resolves to the track being shown again).
+pub fn unhide(doc: &LoroDoc, ids: &[String]) -> Result<()> {
+    for id in ids {
+        if doc.get_map(HIDDEN).get(id).is_some() {
+            doc.get_map(HIDDEN).delete(id)?;
+        }
+    }
+    Ok(())
+}
+
+/// "<volume>/<dir>" keys, e.g. `external_primary/Download`.
+pub fn read_hidden_folders(doc: &LoroDoc) -> Vec<String> {
+    let mut v: Vec<String> = doc.get_map(HIDDEN_FOLDERS).keys().map(|k| k.to_string()).collect();
+    v.sort();
+    v
+}
+
+pub fn set_folder_hidden(doc: &LoroDoc, folder: &str, hidden: bool) -> Result<()> {
+    let folder = folder.trim_matches('/');
+    if folder.is_empty() || folder.len() > 1024 {
+        bail!("Not a folder.");
+    }
+    let m = doc.get_map(HIDDEN_FOLDERS);
+    match (hidden, m.get(folder).is_some()) {
+        (true, false) => m.insert(folder, now_iso())?,
+        (false, true) => m.delete(folder)?,
+        _ => {}
     }
     Ok(())
 }

@@ -67,6 +67,11 @@ impl Node {
         }
     }
 
+    /// The library this device serves (the phone's own), if any.
+    pub fn served_library(&self) -> Option<Arc<Library>> {
+        self.0.library.get().cloned()
+    }
+
     pub fn library_status(&self) -> Option<LibraryStatus> {
         self.0.library.get().map(|l| l.status())
     }
