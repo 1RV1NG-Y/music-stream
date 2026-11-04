@@ -1,0 +1,71 @@
+name: Windows
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Run Rust tests
+        run: cargo test --locked -p musicstream-core -p player
+      - run: npm ci
+        working-directory: app
+      - run: npm test
+        working-directory: app
+      - name: Build the Windows app
+        run: npx tauri build --no-bundle
+        working-directory: app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: music-stream-windows-x64
+          path: target/release/music-stream.exe
+          if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: windows-release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: music-stream-windows-x64
+          path: dist-win
+      - name: Publish the latest Windows build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Skip builds that finished after main moved on.
+          main_sha=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          if [ "$main_sha" != "$GITHUB_SHA" ]; then
+            echo "main has moved on; skipping this build."
+            exit 0
+          fi
+          tag="windows-$GITHUB_SHA"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "This commit already has a Windows release."
+            exit 0
+          fi
+          gh release create "$tag" dist-win/music-stream.exe --target "$GITHUB_SHA" --latest \
+            --title "Windows build ${GITHUB_SHA:0:7}" --notes "Download music-stream.exe for Windows x64."
