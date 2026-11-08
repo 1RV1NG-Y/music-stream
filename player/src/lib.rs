@@ -21,13 +21,15 @@ use rubato::{
 };
 use symphonia::core::{
     audio::SampleBuffer,
-    codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions},
+    codecs::{CODEC_TYPE_NULL, CodecRegistry, Decoder, DecoderOptions},
     formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
     io::MediaSourceStream,
     meta::MetadataOptions,
     probe::Hint,
     units::Time,
 };
+
+mod opus;
 
 /// About this much audio is decoded ahead of the output.
 const RING_SECONDS: f64 = 1.0;
@@ -430,8 +432,19 @@ fn open_decoding(opened: Opened, gain: f32) -> Result<Decoding> {
         (Some(n), None) => n * 1000 / rate as u64,
         _ => 0,
     };
-    let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default()).context("unsupported codec")?;
+    let decoder = codecs().make(params, &DecoderOptions::default()).context("unsupported codec")?;
     Ok(Decoding { track_id: track.id, format, decoder, rate, channels, duration_ms, gain, skip_until: 0 })
+}
+
+/// symphonia's decoders plus Opus.
+fn codecs() -> &'static CodecRegistry {
+    static CODECS: std::sync::LazyLock<CodecRegistry> = std::sync::LazyLock::new(|| {
+        let mut registry = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut registry);
+        registry.register_all::<opus::OpusDecoder>();
+        registry
+    });
+    &CODECS
 }
 
 enum Decoded {

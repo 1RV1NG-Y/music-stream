@@ -55,7 +55,9 @@ cd app && npm run install:linux            # release build, installed for this u
 cd app && npm run android:build            # debug-signed arm64 APK → app/android-dist/ (Android SDK + NDK)
 ```
 
-On Linux, playback needs ALSA's development files (`alsa-lib`; PipeWire serves ALSA).
+The desktop app also needs **CMake**, which builds libopus for Opus playback (Windows:
+`winget install Kitware.CMake`). On Linux, playback needs ALSA's development files
+(`alsa-lib`; PipeWire serves ALSA).
 
 The devices talk over UDP port **47120** and mDNS (UDP 5353) on your local network; allow them
 in your firewall (e.g. `sudo ufw allow from 192.168.1.0/24 to any port 47120 proto udp`).

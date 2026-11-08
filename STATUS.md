@@ -3,7 +3,11 @@
 Read `PLAN.md` first (the agreed design; §8 is the work plan, §12 the review log). This file
 says what is done, what is verified, and exactly what is left, so work can resume from here.
 
-Last updated: 2026-10-29. The plan has passed two reviews by Astra (go-ahead for M0). Then the
+Last updated: 2026-11-07: Opus support (below). The user has used the desktop, phone-player and
+hiding builds since 2026-10-30 on Linux, Windows (their own build) and the S22: all works as
+expected.
+
+2026-10-29: The plan has passed two reviews by Astra (go-ahead for M0). Then the
 user reprioritized: **a usable build first (U1, PLAN §8)**, measurements after. U1 is built,
 installed on the user's Linux PC and S22, and plays end to end. Astra's third review found two
 bugs (fixed below). The user checked the main device paths and waived the edge cases; next
@@ -54,7 +58,7 @@ favorites arrive with `TrackRef` (PLAN §3–§4).
   hit them. The real-time gapless test covers the player side only.
 - Outside U1, still open: Windows, the long-idle play, battery.
 
-## Desktop features, round 1 (2026-10-30; installed on Linux, not yet tried by the user)
+## Desktop features, round 1 (2026-10-30; used by the user on Linux and Windows)
 
 | Piece | Where | Verified by |
 |---|---|---|
@@ -64,7 +68,7 @@ favorites arrive with `TrackRef` (PLAN §3–§4).
 | Media keys and the desktop's now-playing panel (MPRIS; SMTC code path for Windows untested) | `app/src-tauri/src/media.rs` | registered on the session bus; `playerctl -p music_stream status` answers |
 | UI: songs-first sidebar (Songs, Playlists, Albums, Artists); Songs sort Default / Name / Date added, each up or down; right-click / ⋯ menu; drag to reorder playlists and the queue, drag songs onto a sidebar playlist; queue side panel; shuffle, repeat and like in the player bar; keyboard shortcuts with a `?` sheet | `app/src/` | `npm test` (sorting); the UI itself can't be screenshotted here (GNOME refuses), so the user's look is the check |
 
-## Phone player, hiding and folders (2026-10-30; installed on Linux and the S22)
+## Phone player, hiding and folders (2026-10-30; used by the user: works as expected)
 
 | Piece | Where | Verified by |
 |---|---|---|
@@ -78,8 +82,19 @@ Known gaps: with shuffle on, Media3 puts "Play next" songs at a random place in 
 order (needs a custom shuffle order in the service); queue reordering on the phone only with
 shuffle off; two notifications while playing and serving (could be merged).
 
-Still to come: Opus on the PC (4 songs; the phone plays Opus natively but the index skips
-`.opus`), naming the 2 unreadable files, Windows checks.
+## Opus (2026-11-07)
+
+| Piece | Where | Verified by |
+|---|---|---|
+| The phone's scan includes `.opus` (lofty reads its tags); R128 gains (`R128_TRACK_GAIN`, Opus's loudness tags) count as ReplayGain (+5 dB to ReplayGain's reference) | `core/src/library.rs` | unit test; a scan of real Opus files: title, artist, 30000 ms, R128 −512 → +3.0 dB |
+| PC decoding: a symphonia decoder around **libopus** (built from source by `opusic-sys`, needs CMake), multistream, header output gain, encoder warm-up dropped, surround reordered to symphonia's channel order. The phone's Media3 plays Opus natively | `player/src/opus.rs` | 4 tests on ffmpeg-made files: exact lengths; gapless and in phase across two files; 5.1 centre lands on FC; header parsing. 30 s of a real song: same frame count as ffmpeg's libopus, and the same fidelity to the original FLAC (23.40 vs 23.40 dB SNR) |
+
+A pure-Rust decoder (`opus-decoder` 0.1.1) was tried first: it panicked on real music
+(overflow in its CELT code) and decoded 5.1 as silence, so libopus it is. symphonia 0.5
+can't place the end padding of an Ogg stream that fits in one page (under ~1 s of audio);
+real songs are unaffected.
+
+Still to come: naming the 2 unreadable files.
 
 U1 cut-downs (as PLAN §8 says): whole-track cache instead of segment files; folder walk instead
 of MediaStore notifications (rescan every 5 min, on start, and on "Scan again"); no playlists,
@@ -112,8 +127,7 @@ favorites, shuffle or repeat yet; no OS media keys yet.
 `external_primary` (no SD card). 357 FLAC, 29 AAC (`audio/mp4`), 7 MP3, 5 Ogg. Track size:
 median 24.6 MB, 95th percentile 44.6 MB, largest 141.6 MB. So with the 4 GB default no
 track is "oversized" (threshold 1 GB), and the index will be small. **For Track C:** check
-whether the 5 Ogg files are Vorbis or Opus. symphonia has no Opus decoder, so Opus would need
-another decoder.
+whether the 5 Ogg files are Vorbis or Opus. (They were Opus; supported since 2026-11-07.)
 
 ## Current state of the user's devices
 
@@ -133,9 +147,8 @@ another decoder.
   `staticlib`. Both builds work with them.
 
 **Library gaps found:**
-- 5 `.opus` files (4 in `Music/SpotiFLAc`) aren't scanned: `.opus` isn't in the scanned
-  extensions, and symphonia 0.5 has no Opus decoder. Needs an Opus decoder (libopus binding or
-  a pure-Rust one) before adding the extension.
+- 5 `.opus` files (4 songs in `Music/SpotiFLAc`, 1 podcast in `Download`): scanned and
+  playable since 2026-11-07 (see Opus).
 - 2 files fail to read (lofty) and are only logged at debug level. The scan report should
   carry their paths so the phone screen can name them.
 

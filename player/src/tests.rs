@@ -448,3 +448,78 @@ fn play_next_in_the_last_second_of_a_track_is_not_skipped() {
     });
     assert_eq!(p.status().index, Some(1), "track 3 (now at 1) follows, not the old next");
 }
+
+// ---- Opus (decoded by `opus.rs`) ---------------------------------------------------------
+
+/// Decodes a whole file as the player does: (channels, interleaved samples).
+fn decode_all(bytes: &[u8]) -> (usize, Vec<f32>) {
+    let opened = Opened { source: Box::new(Cursor::new(bytes.to_vec())), ext: "opus".into() };
+    let mut d = open_decoding(opened, 1.0).unwrap();
+    let mut out = Vec::new();
+    while let Decoded::Frames(f) = d.next().unwrap() {
+        out.extend(f);
+    }
+    (d.channels, out)
+}
+
+/// A 440 Hz sine, frames 0..50 000 and 50 000..120 000 as two stereo files, and 1.5 s of it on
+/// the centre channel of a 5.1 file, encoded by ffmpeg's libopus. Each spans several Ogg pages:
+/// symphonia 0.5 can't place the end padding of a stream that fits in one page (under ~1 s).
+const OPUS_A: &[u8] = include_bytes!("../tests/fixtures/a.opus");
+const OPUS_B: &[u8] = include_bytes!("../tests/fixtures/b.opus");
+const OPUS_CENTRE_51: &[u8] = include_bytes!("../tests/fixtures/centre51.opus");
+
+#[test]
+fn opus_decodes_to_the_exact_length() {
+    for (bytes, frames) in [(OPUS_A, 50_000), (OPUS_B, 70_000), (OPUS_CENTRE_51, 72_000)] {
+        let (ch, samples) = decode_all(bytes);
+        assert_eq!(samples.len() / ch, frames, "warm-up and end padding trimmed");
+    }
+}
+
+#[test]
+fn opus_plays_gapless_across_files() {
+    let (p, mut sink) = manual(vec![Some(OPUS_A.to_vec()), Some(OPUS_B.to_vec())], 48000, 2);
+    p.set_queue(vec![0, 1], 0, true);
+    let out = pull(&mut sink, 120_000);
+    let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+    // ffmpeg's sine is 1/8; its mono → stereo upmix takes 3 dB off.
+    let amp = 0.125 * std::f32::consts::FRAC_1_SQRT_2;
+    // The sine moves at most 0.005 per sample. Each half was encoded on its own, which costs
+    // up to 0.016 right at the cut (libopus decodes it the same); a gap or a warm-up left in
+    // jumps further, and would also put the sine out of phase below.
+    let worst = left.windows(2).skip(500).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+    assert!(worst < 0.03, "discontinuity of {worst}");
+    let peak = left.iter().skip(1000).fold(0.0f32, |a, s| a.max(s.abs()));
+    assert!((peak - amp).abs() < 0.005, "level kept: {peak}");
+    // In phase across the cut: the decoded sine lines up with the original after it.
+    let expect = |i: usize| amp * (TAU * 440.0 * i as f32 / 48000.0).sin();
+    let err = (59_000..61_000).map(|i| (left[i] - expect(i)).abs()).fold(0.0, f32::max);
+    assert!(err < 0.01, "out of phase by {err}");
+}
+
+#[test]
+fn opus_surround_channels_come_out_in_symphonia_order() {
+    let (ch, samples) = decode_all(OPUS_CENTRE_51);
+    assert_eq!(ch, 6);
+    let energy: Vec<f32> = (0..6).map(|c| samples.iter().skip(c).step_by(6).map(|s| s * s).sum()).collect();
+    // FL FR FC LFE RL RR: only the centre carries the sine.
+    let centre = energy[2];
+    assert!(centre > 100.0, "centre energy {centre}");
+    for (c, e) in energy.iter().enumerate().filter(|(c, _)| *c != 2) {
+        assert!(*e < centre / 1000.0, "channel {c} has {e}");
+    }
+}
+
+#[test]
+fn opus_header_is_read() {
+    let mut head = b"OpusHead\x01\x02\x38\x01\x44\xac\x00\x00\x00\x02\x00".to_vec();
+    let h = opus::parse_head(&head).unwrap();
+    assert_eq!((h.channels, h.pre_skip, h.output_gain, h.streams, h.coupled, h.mapping), (2, 312, 2.0, 1, 1, vec![0, 1]));
+    head[9] = 6;
+    head[18] = 1;
+    assert_eq!(opus::parse_head(&head), None, "family 1 needs its mapping table");
+    head.extend([4, 2, 0, 4, 1, 2, 3, 5]);
+    let h = opus::parse_head(&head).unwrap();
+    assert_eq!((h.channels, h.streams, h.coupled, h.mapping.len()), (6, 4, 2, 6));
+}

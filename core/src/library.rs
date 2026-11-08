@@ -22,7 +22,7 @@ pub type ArtHash = [u8; 32];
 const SAMPLE: u64 = 64 * 1024;
 /// Longest side of a cover thumbnail.
 const ART_SIZE: u32 = 512;
-const AUDIO_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "mp4", "aac", "ogg", "oga", "wav", "aif", "aiff"];
+const AUDIO_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "mp4", "aac", "ogg", "oga", "opus", "wav", "aif", "aiff"];
 const FOLDER_ART: &[&str] = &["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
 
 /// A folder tree that counts as library, with the storage volume it lives on (its name is
@@ -624,6 +624,7 @@ fn read_track(path: &Path, volume: &str, rel: &str, id: TrackId, dir: &Path, art
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
     let text = |key: lofty::tag::ItemKey| tag.and_then(|t| t.get_string(key)).map(|s| s.trim().to_owned()).unwrap_or_default();
     let gain = |key: lofty::tag::ItemKey| parse_gain(&text(key));
+    let r128 = |key: lofty::tag::ItemKey| parse_r128(&text(key));
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let art_source = tag
         .and_then(|t| t.pictures().iter().find(|p| p.pic_type() == lofty::picture::PictureType::CoverFront).or_else(|| t.pictures().first()))
@@ -653,9 +654,9 @@ fn read_track(path: &Path, volume: &str, rel: &str, id: TrackId, dir: &Path, art
         year: tag.and_then(|t| t.date()).map(|d| d.year).unwrap_or(0),
         genre: tag.and_then(|t| t.genre()).map(|s| s.trim().to_owned()).unwrap_or_default(),
         replay_gain: ReplayGain {
-            track_gain: gain(lofty::tag::ItemKey::ReplayGainTrackGain),
+            track_gain: gain(lofty::tag::ItemKey::ReplayGainTrackGain).or_else(|| r128(lofty::tag::ItemKey::R128TrackGain)),
             track_peak: gain(lofty::tag::ItemKey::ReplayGainTrackPeak),
-            album_gain: gain(lofty::tag::ItemKey::ReplayGainAlbumGain),
+            album_gain: gain(lofty::tag::ItemKey::ReplayGainAlbumGain).or_else(|| r128(lofty::tag::ItemKey::R128AlbumGain)),
             album_peak: gain(lofty::tag::ItemKey::ReplayGainAlbumPeak),
         },
         art,
@@ -666,6 +667,12 @@ fn read_track(path: &Path, volume: &str, rel: &str, id: TrackId, dir: &Path, art
 fn parse_gain(s: &str) -> Option<f32> {
     let s = s.trim().trim_end_matches(|c: char| c.is_alphabetic() || c.is_whitespace());
     s.parse().ok().filter(|v: &f32| v.is_finite())
+}
+
+/// Opus files carry EBU R128 gains instead of ReplayGain: Q7.8 dB relative to -23 LUFS, where
+/// ReplayGain aims at about -18 (RFC 7845 §5.2.1). "-1280" → 0.0 dB.
+fn parse_r128(s: &str) -> Option<f32> {
+    s.trim().parse::<i16>().ok().map(|q| q as f32 / 256.0 + 5.0)
 }
 
 fn folder_art(track: &Path) -> Option<Vec<u8>> {
@@ -871,5 +878,8 @@ pub(crate) mod tests {
         assert_eq!(parse_gain("-6.52 dB"), Some(-6.52));
         assert_eq!(parse_gain("0.988"), Some(0.988));
         assert_eq!(parse_gain(""), None);
+        assert_eq!(parse_r128("-1280"), Some(0.0));
+        assert_eq!(parse_r128("256"), Some(6.0));
+        assert_eq!(parse_r128("-6.5 dB"), None);
     }
 }
