@@ -102,3 +102,50 @@ export function sortSongs(albums, sort = 'default', descending = false) {
 
 /** Tracks for a list of ids, skipping any no longer in the library. */
 export const tracksFor = (ids, byId) => ids.map(id => byId.get(id)).filter(Boolean);
+
+const STAMP = /^\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]/;
+
+/**
+ * Lyrics text → { timed, lines: [{ ms, text }] }, or null when there's nothing to show.
+ * LRC ("[01:23.45]line", several stamps per line, [offset:], word stamps) gives timed lines in
+ * order; anything else gives the plain lines. An empty timed line is an instrumental gap.
+ */
+export function parseLyrics(text) {
+  if (!text?.trim()) return null;
+  let offset = 0;
+  const timed = [], plain = [];
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    const line = raw.trim();
+    const off = line.match(/^\[offset:\s*([+-]?\d+)\s*\]$/i);
+    if (off) { offset = Number(off[1]); continue; }
+    if (/^\[[a-z]+:.*\]$/i.test(line)) continue;   // [ti:], [ar:], [by:], …
+    const stamps = [];
+    let rest = line, m;
+    while ((m = rest.match(STAMP))) {
+      stamps.push(Number(m[1]) * 60000 + Math.round(parseFloat(m[2].replace(':', '.')) * 1000));
+      rest = rest.slice(m[0].length);
+    }
+    const words = rest.replace(/<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g, '')
+      .replace(/^\s*(?:v\d+|bg):/i, '')   // enhanced LRC's singer marks: "v1:", "v2:", "bg:"
+      .replace(/\s+/g, ' ').trim();
+    if (stamps.length) stamps.forEach(ms => timed.push({ ms, text: words }));
+    else plain.push(words);
+  }
+  if (timed.length) {
+    // A positive offset shows every line that much earlier.
+    return { timed: true, lines: timed.sort((a, b) => a.ms - b.ms).map(l => ({ ms: Math.max(0, l.ms - offset), text: l.text })) };
+  }
+  while (plain.length && !plain[0]) plain.shift();
+  while (plain.length && !plain.at(-1)) plain.pop();
+  return plain.length ? { timed: false, lines: plain.map(t => ({ ms: null, text: t })) } : null;
+}
+
+/** The index of the line being sung at `ms` (-1 before the first). */
+export function lineAt(lines, ms) {
+  let lo = 0, hi = lines.length - 1, found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].ms <= ms) { found = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return found;
+}

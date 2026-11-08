@@ -392,6 +392,27 @@ fn shuffle_keeps_the_current_track_and_off_restores_the_order() {
 }
 
 #[test]
+fn a_shorter_queue_while_shuffled_keeps_the_player_alive() {
+    // Found on the user's PC: with shuffle on, playing a 2-song album after a longer queue
+    // remapped the old queue's output marks and panicked the player thread.
+    let rate = 8000;
+    let tracks = (0..20).map(|_| Some(wav(rate, 1, rate as usize, sine(440.0, rate)))).collect();
+    let (p, mut sink) = manual(tracks, rate, 2);
+    p.set_shuffle(true);
+    p.set_queue((0..20).collect(), 15, true);
+    pull(&mut sink, 400);
+    p.jump(5);
+    wait_until("on the sixth song", || p.status().index == Some(5));
+    pull(&mut sink, 400);
+    p.set_queue(vec![3, 4], 0, true);
+    wait_until("new queue", || p.queue().len() == 2);
+    pull(&mut sink, 400);
+    let st = p.status();
+    assert_eq!(st.index, Some(0));
+    assert!(st.playing);
+}
+
+#[test]
 fn repeat_one_replays_and_repeat_all_wraps() {
     let rate = 8000;
     let short = |freq| Some(wav(rate, 1, rate as usize / 4, sine(freq, rate)));

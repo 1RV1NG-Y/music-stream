@@ -3,14 +3,16 @@ import {
   ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Disc3, Ellipsis, Flame, Heart, History, Keyboard, ListEnd, ListMusic,
   ListPlus, Loader2, Music2, Pause, Pencil, Play, Plus, Repeat, Repeat1, Search, Shuffle, SkipBack, SkipForward, Smartphone,
   Sparkles, Trash2, TrendingUp, Users, Volume1, Volume2, VolumeX, X, HardDriveDownload, GripVertical, EyeOff, Eye, Folder, FolderX,
+  Download, MicVocal, FolderOpen, CircleCheck, CircleAlert,
 } from 'lucide-react';
-import { artUrl, errorText, music, on } from './api.mjs';
+import { errorText, music, on, useArt } from './api.mjs';
 import {
   SONG_SORTS, albumKey, formatLength, formatQuality, formatTime, groupAlbums, groupArtists, matcher, sortSongs, sortTracks, tracksFor,
 } from './library.mjs';
 import { ownWindowControls } from './platform.mjs';
 import WindowControls from './WindowControls.jsx';
 import Devices from './Devices.jsx';
+import Lyrics, { CoverGlow } from './Lyrics.jsx';
 import { Dialog, IconButton } from './ui.jsx';
 
 const SMART_ICONS = { 'on-repeat': Flame, 'recently-played': History, 'recently-added': Sparkles, 'most-played': TrendingUp };
@@ -80,6 +82,7 @@ export default function Desktop() {
     toggleLike,
     openAlbum: key => go({ name: 'album', key, back: view }),
     openArtist: name => go({ name: 'artist', key: name.toLowerCase() }),
+    download: list => run('download', { ids: ids(list) }),
     hide: async list => { await run('hide', { ids: ids(list) }); loadLibrary(); loadLists(); },
     unhide: async list => { await run('unhide', { ids: ids(list) }); loadLibrary(); loadLists(); },
     setFolder: async (folder, hidden) => { await run('setFolderHidden', { folder, hidden }); loadLibrary(); loadLists(); },
@@ -114,6 +117,7 @@ export default function Desktop() {
       else if (e.key.toLowerCase() === 'm') { handled(); run('setVolume', { volume: p?.volume > 0 ? 0 : 0.8 }); }
       else if (e.key.toLowerCase() === 'l') { const t = currentRef.current; if (t) { handled(); toggleLike([t]); } }
       else if (e.key.toLowerCase() === 'q') { handled(); setQueueOpen(o => !o); }
+      else if (e.key.toLowerCase() === 'y') { handled(); toggleLyricsRef.current(); }
       else if (e.key === '?') { handled(); setHelpOpen(true); }
     };
     window.addEventListener('keydown', key);
@@ -121,6 +125,8 @@ export default function Desktop() {
   }, [run]); // eslint-disable-line react-hooks/exhaustive-deps
   const currentRef = useRef(current);
   currentRef.current = current;
+  const toggleLyricsRef = useRef(null);
+  toggleLyricsRef.current = () => setView(v => (v.name === 'lyrics' ? v.back ?? { name: 'songs' } : { name: 'lyrics', back: v }));
 
   const listFor = v => {
     if (v.name === 'liked') return { title: 'Liked songs', hint: 'Songs you liked. They sync to your other computers through the phone.', tracks: tracksFor(lists.liked, byId), icon: Heart, kind: 'liked' };
@@ -139,7 +145,7 @@ export default function Desktop() {
   let content;
   if (tracks === null) content = <p className="empty">Loading…</p>;
   else if (!tracks.length) content = <EmptyLibrary remote={remote} onDevices={() => setDevicesOpen(true)} />;
-  else if (match) content = <SearchResults albums={albums} match={match} actions={actions} />;
+  else if (match && view.name !== 'lyrics') content = <SearchResults albums={albums} match={match} actions={actions} />;
   else if (view.name === 'songs') content = <SongsPage albums={albums} actions={actions} />;
   else if (['liked', 'smart', 'playlist'].includes(view.name)) {
     const l = listFor(view);
@@ -161,6 +167,7 @@ export default function Desktop() {
           <AlbumGrid albums={artist.albums} actions={{ ...actions, openAlbum: key => go({ name: 'album', key, back: view }) }} /></section>
       : <p className="empty">Not found.</p>;
   } else if (view.name === 'artists') content = <ArtistList artists={artists} onOpen={key => go({ name: 'artist', key })} />;
+  else if (view.name === 'lyrics') content = <LyricsPage track={current} player={player} run={run} onClose={() => go(view.back ?? { name: 'songs' })} />;
   else if (view.name === 'folders') content = <FoldersPage actions={actions} tracks={tracks} />;
   else if (view.name === 'hidden') content = <HiddenPage tracks={hiddenTracks} actions={actions} onFolders={() => go({ name: 'folders' })} />;
   else content = <section className="page"><h1 className="page-title">Albums</h1><AlbumGrid albums={albums} actions={actions} /></section>;
@@ -216,15 +223,17 @@ export default function Desktop() {
         </div>
       </nav>
 
-      <main className="content" ref={mainRef}>
+      <main className={`content ${view.name === 'lyrics' ? 'lyrics-mode' : ''}`} ref={mainRef}>
         {error && <p className="banner error" role="alert">{error} <IconButton icon={X} label="Dismiss" onClick={() => setError('')} /></p>}
         {content}
       </main>
 
       {queueOpen && <QueuePanel queue={queue} player={player} run={run} actions={actions} onClose={() => setQueueOpen(false)} />}
 
-      <PlayerBar player={player} track={current} run={run} actions={actions} queueOpen={queueOpen}
-        onOpenAlbum={() => current && actions.openAlbum(albumKey(current))} onQueue={() => setQueueOpen(o => !o)} />
+      <PlayerBar player={player} track={current} run={run} actions={actions} queueOpen={queueOpen} lyricsOpen={view.name === 'lyrics'}
+        onOpenAlbum={() => current && actions.openAlbum(albumKey(current))} onQueue={() => setQueueOpen(o => !o)}
+        onLyrics={() => (view.name === 'lyrics' ? go(view.back ?? { name: 'songs' }) : go({ name: 'lyrics', back: view }))} />
+      <DownloadsCard run={run} />
 
       {menu && <TrackMenu menu={menu} lists={lists} actions={actions} run={run} reload={loadLists} onNew={tracks => setNaming({ tracks })}
         onRenamePlaylist={pl => setNaming({ playlist: pl })} onOpenPlaylist={id => go({ name: 'playlist', id })} onClose={() => setMenu(null)} />}
@@ -237,10 +246,9 @@ export default function Desktop() {
 }
 
 function Cover({ hash, size = 'md', title = '' }) {
-  const [failed, setFailed] = useState(false);
-  const url = artUrl(hash);
-  return url && !failed
-    ? <img className={`cover cover-${size}`} src={url} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+  const { url, onError } = useArt(hash);
+  return url
+    ? <img className={`cover cover-${size}`} src={url} alt="" loading="lazy" decoding="async" draggable={false} onError={onError} />
     : <div className={`cover cover-${size} cover-empty`} aria-hidden="true"><Disc3 strokeWidth={1.25} />{(size === 'md' || size === 'lg') && <span>{title.slice(0, 40)}</span>}</div>;
 }
 
@@ -311,6 +319,7 @@ function ListPage({ list, actions, run, onRename, onDeleted, reload }) {
       <div className="toolbar-row">
         <button type="button" className="primary" disabled={!tracks.length} onClick={() => actions.play(tracks)}><Play size={16} fill="currentColor" /> Play</button>
         <button type="button" disabled={!tracks.length} onClick={() => actions.shuffle(tracks)}><Shuffle size={16} /> Shuffle</button>
+        <IconButton icon={Download} label="Download these songs to this PC" disabled={!tracks.length} onClick={() => actions.download(tracks)} />
         {kind === 'user' && <>
           <div className="spacer" />
           <IconButton icon={Pencil} label="Rename" onClick={onRename} />
@@ -364,6 +373,7 @@ function AlbumPage({ album, actions, onBack }) {
           <div className="row">
             <button type="button" className="primary" onClick={() => actions.play(album.tracks)}><Play size={16} fill="currentColor" /> Play</button>
             <button type="button" onClick={() => actions.shuffle(album.tracks)}><Shuffle size={16} /> Shuffle</button>
+            <IconButton icon={Download} label="Download the album to this PC" onClick={() => actions.download(album.tracks)} />
             <IconButton icon={Ellipsis} label="More" onClick={e => actions.menu(e, album.tracks)} />
           </div>
         </div>
@@ -496,6 +506,7 @@ function TrackMenu({ menu, lists, actions, run, reload, onNew, onRenamePlaylist,
           )}
         </div>
         {item(Heart, tracks.every(t => t.liked) ? 'Unlike' : 'Like', () => actions.toggleLike(tracks))}
+        {item(Download, tracks.length > 1 ? `Download ${tracks.length} songs to this PC` : 'Download to this PC', () => actions.download(tracks))}
         {one && item(Disc3, 'Go to album', () => actions.openAlbum(albumKey(one)))}
         {one && item(Users, 'Go to artist', () => actions.openArtist(one.albumArtist || one.artist))}
         {extra?.remove && item(Trash2, 'Remove from this playlist', extra.remove, 'danger')}
@@ -547,6 +558,7 @@ const SHORTCUTS = [
   ['R', 'Repeat: off → all → one'],
   ['L', 'Like the playing song'],
   ['Q', 'Show / hide the queue'],
+  ['Y', 'Show / hide the lyrics'],
   ['/  or  Ctrl F', 'Search'],
   ['?', 'This list'],
 ];
@@ -600,7 +612,67 @@ function QueuePanel({ queue, player, run, actions, onClose }) {
   );
 }
 
-function PlayerBar({ player, track, run, actions, queueOpen, onOpenAlbum, onQueue }) {
+function LyricsPage({ track, player, run, onClose }) {
+  return (
+    <section className="lyrics-page">
+      <CoverGlow hash={track?.art} />
+      <header className="lyrics-head">
+        {track && <Cover hash={track.art} size="sm" />}
+        <div className="lyrics-title">
+          <strong>{track?.title ?? 'Lyrics'}</strong>
+          {track && <small>{track.artist}</small>}
+        </div>
+        <IconButton icon={X} label="Close lyrics (Y)" onClick={onClose} />
+      </header>
+      <Lyrics track={track} player={player} onSeek={ms => run('seek', { ms })} className="desktop-lyrics" />
+    </section>
+  );
+}
+
+/** Songs being saved onto this PC: progress while it works, then where they went. */
+function DownloadsCard({ run }) {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    music('downloads').then(setD, () => {});
+    return on('downloads', setD);
+  }, []);
+  const jobs = d?.jobs ?? [];
+  if (!jobs.length) return null;
+  const waiting = jobs.filter(j => j.state === 'queued' || j.state === 'saving');
+  const saved = jobs.filter(j => j.state === 'saved');
+  const failed = jobs.filter(j => j.state === 'failed');
+  const current = jobs.find(j => j.state === 'saving');
+  const total = jobs.reduce((n, j) => n + j.total, 0) || 1;
+  const done = jobs.reduce((n, j) => n + (j.state === 'saved' ? j.total : j.state === 'saving' ? j.done : 0), 0);
+  const where = d.folder.split(/[\\/]/).slice(-2).join('/');
+  return (
+    <aside className="downloads" aria-live="polite">
+      {waiting.length ? <>
+        <div className="downloads-row">
+          <Download size={16} className="accent" aria-hidden="true" />
+          <strong>Saving {saved.length + 1} of {saved.length + waiting.length} {saved.length + waiting.length === 1 ? 'song' : 'songs'} to this PC</strong>
+          <button type="button" className="small" onClick={() => run('cancelDownloads')}>Cancel</button>
+        </div>
+        <div className="downloads-bar"><span style={{ width: `${(done / total) * 100}%` }} /></div>
+        {current && <small className="downloads-now">{current.title} · {Math.round((current.done / Math.max(1, current.total)) * 100)}%</small>}
+      </> : <>
+        <div className="downloads-row">
+          {failed.length ? <CircleAlert size={16} className="danger" aria-hidden="true" /> : <CircleCheck size={16} className="ok" aria-hidden="true" />}
+          <strong>{saved.length ? `Saved ${saved.length} ${saved.length === 1 ? 'song' : 'songs'} to ${where}` : 'Nothing was saved'}</strong>
+          <IconButton icon={X} label="Dismiss" onClick={() => run('clearDownloads')} />
+        </div>
+        {failed.length > 0 && <small className="downloads-failed" title={failed.map(f => `${f.title}: ${f.error}`).join('\n')}>
+          {failed.length} couldn’t be saved: {failed[0].error}
+          <button type="button" className="link" onClick={() => run('download', { ids: failed.map(f => f.id) })}>Try again</button>
+        </small>}
+        {saved.length > 0 && <button type="button" className="small" onClick={() => run('showDownload', { path: saved.length === 1 ? saved[0].path : null })}>
+          <FolderOpen size={14} /> Show in folder</button>}
+      </>}
+    </aside>
+  );
+}
+
+function PlayerBar({ player, track, run, actions, queueOpen, lyricsOpen, onOpenAlbum, onQueue, onLyrics }) {
   const [drag, setDrag] = useState(null);
   const [volume, setVolume] = useState(null);
   const duration = player?.durationMs || track?.durationMs || 0;
@@ -653,6 +725,7 @@ function PlayerBar({ player, track, run, actions, queueOpen, onOpenAlbum, onQueu
 
       <div className="side-controls">
         {track && <small className="quality" title={player?.output}>{formatQuality(track)}</small>}
+        <IconButton icon={MicVocal} label="Lyrics (Y)" active={lyricsOpen} onClick={onLyrics} disabled={!track && !lyricsOpen} />
         <IconButton icon={ListMusic} label="Queue (Q)" active={queueOpen} onClick={onQueue} />
         <IconButton icon={VolumeIcon} label={vol === 0 ? 'Unmute (M)' : 'Mute (M)'}
           onClick={() => { if (vol > 0) { lastVol.current = vol; setVol(0); } else setVol(lastVol.current || 0.8); }} />

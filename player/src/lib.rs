@@ -1025,6 +1025,7 @@ impl<P: Provider> Worker<P> {
         self.keys = order.iter().map(|&i| self.keys[i]).collect();
         self.index = self.index.map(|i| new_at[i]);
         let mut tl = self.timeline.lock().unwrap();
+        tl.marks.retain(|m| m.index < new_at.len());
         tl.marks.iter_mut().for_each(|m| m.index = new_at[m.index]);
         tl.index = self.index;
     }
@@ -1037,6 +1038,9 @@ impl<P: Provider> Worker<P> {
             Cmd::SetQueue(items, start, play) => {
                 let n = items.len();
                 *self.queue.lock().unwrap() = items;
+                // The output's marks point into the old queue: drop them before shuffling the
+                // new one remaps them (restart_at below would clear them anyway).
+                self.timeline.lock().unwrap().marks.clear();
                 self.keys = (0..n).map(|i| i as f64).collect();
                 self.index = (n > 0).then(|| start.min(n - 1));
                 if self.shuffle && n > 0 {

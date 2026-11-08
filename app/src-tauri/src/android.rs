@@ -36,6 +36,13 @@ pub async fn dispatch(app: &tauri::AppHandle, method: &str, params: serde_json::
     if let Some(result) = crate::userdata::dispatch(&node, &index, |_| true, method, params.clone()).await {
         return result;
     }
+    if method == "lyrics" {
+        let id: String = serde_json::from_value(params.get("id").cloned().unwrap_or_default())?;
+        let id = musicstream_core::library::parse_hex::<16>(&id)?;
+        let lib = library.clone();
+        let text = tauri::async_runtime::spawn_blocking(move || lib.lyrics(&id)).await?;
+        return Ok(json!({ "text": text }));
+    }
     let items = |ids: &Value| -> anyhow::Result<Vec<Value>> {
         let ids: Vec<String> = serde_json::from_value(ids.clone()).unwrap_or_default();
         Ok(crate::userdata::tracks(&index, &ids)?
@@ -181,6 +188,8 @@ pub fn art_protocol<R: tauri::Runtime>(_ctx: tauri::UriSchemeContext<'_, R>, req
         responder.respond(match file {
             Some(bytes) => tauri::http::Response::builder()
                 .header("Content-Type", "image/jpeg")
+                // Lets a canvas read covers for their colours (palette.mjs).
+                .header("Access-Control-Allow-Origin", "*")
                 .header("Cache-Control", "max-age=31536000, immutable")
                 .body(bytes)
                 .unwrap(),

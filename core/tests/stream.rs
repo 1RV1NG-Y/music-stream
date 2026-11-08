@@ -30,6 +30,10 @@ async fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
 
 /// A file lofty accepts as FLAC: headers with tags, then `len` bytes of pseudo-random payload.
 fn write_flac(path: &Path, title: &str, len: usize, seed: u8) {
+    write_flac_with(path, &[format!("TITLE={title}"), "ALBUM=Test".into()], len, seed);
+}
+
+fn write_flac_with(path: &Path, comments: &[String], len: usize, seed: u8) {
     let mut f = b"fLaC".to_vec();
     let mut si = vec![0x10, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0];
     si.extend_from_slice(&((44100u64 << 44) | (1u64 << 41) | (15u64 << 36) | 441000).to_be_bytes());
@@ -40,9 +44,8 @@ fn write_flac(path: &Path, title: &str, len: usize, seed: u8) {
     let mut vc = Vec::new();
     vc.extend_from_slice(&4u32.to_le_bytes());
     vc.extend_from_slice(b"test");
-    let comments = [format!("TITLE={title}"), "ALBUM=Test".into()];
     vc.extend_from_slice(&(comments.len() as u32).to_le_bytes());
-    for c in &comments {
+    for c in comments {
         vc.extend_from_slice(&(c.len() as u32).to_le_bytes());
         vc.extend_from_slice(c.as_bytes());
     }
@@ -212,4 +215,54 @@ async fn constant_seeking_never_breaks_a_read() {
     assert_eq!(remote.status().read_errors, 0, "no read broke off mid-frame");
     phone.shutdown().await;
     pc.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pc_gets_lyrics_and_saves_tracks() {
+    let dirs: Vec<_> = (0..5).map(|_| tempfile::tempdir().unwrap()).collect();
+    let music = dirs[3].path();
+    let tags = |title: &str, extra: &[&str]| -> Vec<String> {
+        let mut v = vec![format!("TITLE={title}"), "ALBUM=Test".into()];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    };
+    // Plain text and timed lyrics both in tags: the timed ones win.
+    write_flac_with(&music.join("01.flac"), &tags("Tagged", &["UNSYNCEDLYRICS=Hello\nWorld", "LYRICS=[ti:Tagged]\n[00:01.00]Hello\n[00:02.50]World"]), 1_500_000, 1);
+    write_flac(&music.join("02.flac"), "Sidecar", 600_000, 2);
+    std::fs::write(music.join("02.lrc"), "[00:03.00]From the side").unwrap();
+    write_flac(&music.join("03.flac"), "None", 600_000, 3);
+
+    let phone = open(dirs[0].path(), "Phone", "android").await;
+    phone.serve_library(Arc::new(Library::open(dirs[0].path().join("music"), vec![Root { volume: "external_primary".into(), path: music.to_owned() }]).unwrap()));
+    let pc = open(dirs[1].path(), "PC", "linux").await;
+    pc.use_code(&phone.create_invite().unwrap().ticket).await.unwrap();
+    let remote = Remote::open(pc.clone(), dirs[2].path().to_owned()).unwrap();
+    wait_for("index arrives", || remote.index().tracks.len() == 3).await;
+    let index = remote.index();
+    let by = |title: &str| index.tracks.iter().find(|t| t.title == title).unwrap().clone();
+
+    let tagged = remote.lyrics(&by("Tagged")).await.unwrap().unwrap();
+    assert!(tagged.starts_with("[ti:Tagged]") && tagged.contains("[00:02.50]World"), "{tagged}");
+    assert_eq!(remote.lyrics(&by("Sidecar")).await.unwrap().as_deref(), Some("[00:03.00]From the side"));
+    assert_eq!(remote.lyrics(&by("None")).await.unwrap(), None);
+
+    // Saving fetches the whole file and leaves no partial file behind.
+    let out = dirs[4].path().join("Tagged.flac");
+    let (r, t, o) = (remote.clone(), by("Tagged"), out.clone());
+    let last = tokio::task::spawn_blocking(move || {
+        let last = std::sync::atomic::AtomicU64::new(0);
+        r.save_track(&t, &o, &AtomicBool::new(false), |n| last.store(n, std::sync::atomic::Ordering::Relaxed)).unwrap();
+        last.into_inner()
+    })
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), std::fs::read(music.join("01.flac")).unwrap());
+    assert_eq!(last, by("Tagged").size());
+
+    // A cancelled save fails and leaves nothing.
+    let out = dirs[4].path().join("None.flac");
+    let (r, t, o) = (remote.clone(), by("None"), out.clone());
+    let err = tokio::task::spawn_blocking(move || r.save_track(&t, &o, &AtomicBool::new(true), |_| {})).await.unwrap().unwrap_err();
+    assert_eq!(err.to_string(), "Cancelled.");
+    assert_eq!(std::fs::read_dir(dirs[4].path()).unwrap().count(), 1, "only the saved track");
 }

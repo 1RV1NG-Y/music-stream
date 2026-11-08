@@ -6,8 +6,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    io::{Read, Seek, SeekFrom},
-    path::PathBuf,
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -71,6 +71,7 @@ struct Inner {
     refresh: Notify,
     error: Mutex<Option<String>>,
     read_errors: AtomicU64,
+    lyrics: Mutex<HashMap<(TrackId, u64), Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -100,6 +101,7 @@ impl Remote {
             refresh: Notify::new(),
             error: Mutex::new(None),
             read_errors: AtomicU64::new(0),
+            lyrics: Mutex::default(),
         }));
         tokio::spawn(remote.clone().refresh_loop());
         Ok(remote)
@@ -199,6 +201,84 @@ impl Remote {
             }
         }
         Ok(bytes)
+    }
+
+    /// A track's lyrics: asked of the phone, or read from the cached file when it's away.
+    pub async fn lyrics(&self, track: &Track) -> Result<Option<String>> {
+        let key = (track.id, track.rev);
+        if let Some(found) = self.0.lyrics.lock().unwrap().get(&key) {
+            return Ok(found.clone());
+        }
+        let found = match self.0.node.fetch_lyrics(track.id).await {
+            Ok(found) => found,
+            Err(e) => {
+                let path = self.cache_path(&track.id, track.rev);
+                if !std::fs::metadata(&path).is_ok_and(|m| m.len() == track.size()) {
+                    return Err(e);
+                }
+                tokio::task::spawn_blocking(move || crate::library::read_lyrics(&path, false)).await?
+            }
+        };
+        self.0.lyrics.lock().unwrap().insert(key, found.clone());
+        Ok(found)
+    }
+
+    /// Copies a whole track to `dest` (fetching what isn't cached), reporting bytes written.
+    /// Fails if `cancel` is set or the phone sends nothing for 30 s. Blocking.
+    pub fn save_track(&self, track: &Track, dest: &Path, cancel: &AtomicBool, progress: impl Fn(u64)) -> Result<()> {
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let mut source = self.open_track(track, interrupt.clone())?;
+        let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let part = dest.with_extension(format!("{ext}.part"));
+        let written = AtomicU64::new(0);
+        let done = AtomicBool::new(false);
+        let result = std::thread::scope(|scope| {
+            // Reads wait for the phone; the watchdog turns a cancel or a stall into an interrupt.
+            scope.spawn(|| {
+                let (mut last, mut since) = (0, std::time::Instant::now());
+                while !done.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let now = written.load(Ordering::Relaxed);
+                    if now != last {
+                        (last, since) = (now, std::time::Instant::now());
+                    }
+                    if cancel.load(Ordering::Acquire) || since.elapsed() > Duration::from_secs(30) {
+                        interrupt.store(true, Ordering::Release);
+                    }
+                }
+            });
+            let mut copy = || -> Result<()> {
+                let mut out = std::fs::File::create(&part).with_context(|| format!("creating {}", part.display()))?;
+                let mut buf = vec![0; 256 * 1024];
+                loop {
+                    if cancel.load(Ordering::Acquire) {
+                        anyhow::bail!("Cancelled.");
+                    }
+                    let n = match source.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) if e.to_string() == INTERRUPTED => {
+                            anyhow::bail!(if cancel.load(Ordering::Acquire) { "Cancelled." } else { "The phone stopped sending." })
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
+                    out.write_all(&buf[..n])?;
+                    progress(written.fetch_add(n as u64, Ordering::Relaxed) + n as u64);
+                }
+                out.sync_all()?;
+                Ok(())
+            };
+            let result = copy();
+            done.store(true, Ordering::Release);
+            result
+        });
+        match result {
+            Ok(()) => std::fs::rename(&part, dest).with_context(|| format!("saving {}", dest.display())),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                Err(e)
+            }
+        }
     }
 
     // ---- Tracks ----------------------------------------------------------------------------

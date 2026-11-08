@@ -36,6 +36,8 @@ pub enum StreamReq {
     /// Bytes `start..end` of a track, as it was at `rev`.
     Read { track: [u8; 16], rev: u64, start: u64, end: u64 },
     Art { hash: [u8; 32] },
+    /// A track's lyrics (answered with `Have` and UTF-8 text, or `Missing`).
+    Lyrics { track: [u8; 16] },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

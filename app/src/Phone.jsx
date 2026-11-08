@@ -2,12 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronDown, ChevronLeft, Disc3, Ellipsis, Eye, EyeOff, Flame, Folder, FolderX, Heart,
   History, ListEnd, ListMusic, ListPlus, Loader2, MoreHorizontal, Music2, Pause, Play, Plus, RefreshCw, Repeat, Repeat1, Search,
-  Shuffle, SkipBack, SkipForward, Smartphone, Sparkles, Trash2, TrendingUp, Users, Wifi, X,
+  Shuffle, SkipBack, SkipForward, Smartphone, Sparkles, Trash2, TrendingUp, Users, Wifi, X, MicVocal,
 } from 'lucide-react';
-import { artUrl, devices, errorText, music, on } from './api.mjs';
+import { devices, errorText, music, on, useArt } from './api.mjs';
 import { SONG_SORTS, albumKey, formatLength, formatTime, groupAlbums, groupArtists, matcher, sortSongs, sortTracks, tracksFor } from './library.mjs';
 import { androidSyncControls, onBackButton } from './platform.mjs';
 import Devices from './Devices.jsx';
+import Lyrics, { CoverGlow } from './Lyrics.jsx';
 import { ago } from './ui.jsx';
 
 const SMART_ICONS = { 'on-repeat': Flame, 'recently-played': History, 'recently-added': Sparkles, 'most-played': TrendingUp };
@@ -38,6 +39,7 @@ export default function Phone() {
   const [sheet, setSheet] = useState(null);
   const [nowOpen, setNowOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [lyricsOpen, setLyricsOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [naming, setNaming] = useState(null);
   const [error, setError] = useState('');
@@ -112,6 +114,7 @@ export default function Phone() {
     if (naming) { setNaming(null); return true; }
     if (devicesOpen) { setDevicesOpen(false); return true; }
     if (queueOpen) { setQueueOpen(false); return true; }
+    if (lyricsOpen) { setLyricsOpen(false); return true; }
     if (nowOpen) { setNowOpen(false); return true; }
     if (query !== null) { setQuery(null); return true; }
     if (stack.length) { setStack(s => s.slice(0, -1)); return true; }
@@ -173,7 +176,8 @@ export default function Phone() {
         ))}
       </nav>
 
-      {nowOpen && current && <NowPlaying track={current} player={player} run={run} actions={actions} onClose={() => setNowOpen(false)} onQueue={() => setQueueOpen(true)} />}
+      {nowOpen && current && <NowPlaying track={current} player={player} run={run} actions={actions} onClose={() => setNowOpen(false)} onQueue={() => setQueueOpen(true)}
+        lyricsOpen={lyricsOpen} setLyricsOpen={setLyricsOpen} />}
       {queueOpen && <QueueSheet player={player} byId={byId} run={run} onClose={() => setQueueOpen(false)} />}
       {sheet && <ActionSheet sheet={sheet} lists={lists} actions={actions} run={run} refresh={refresh} onNew={list => setNaming({ tracks: list })}
         onClose={() => setSheet(null)} close={() => { setSheet(null); setNowOpen(false); }} />}
@@ -194,10 +198,9 @@ function listFor(v, lists, byId) {
 }
 
 function Cover({ hash, size = 'md' }) {
-  const [failed, setFailed] = useState(false);
-  const url = artUrl(hash);
-  return url && !failed
-    ? <img className={`m-cover m-cover-${size}`} src={url} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
+  const { url, onError } = useArt(hash);
+  return url
+    ? <img className={`m-cover m-cover-${size}`} src={url} alt="" loading="lazy" decoding="async" onError={onError} />
     : <div className={`m-cover m-cover-${size} m-cover-empty`}><Disc3 strokeWidth={1.25} /></div>;
 }
 
@@ -453,7 +456,7 @@ function MiniPlayer({ track, player, run, onOpen }) {
   );
 }
 
-function NowPlaying({ track, player, run, actions, onClose, onQueue }) {
+function NowPlaying({ track, player, run, actions, onClose, onQueue, lyricsOpen, setLyricsOpen }) {
   const [drag, setDrag] = useState(null);
   const duration = player?.durationMs || track.durationMs || 0;
   const position = drag ?? player?.positionMs ?? 0;
@@ -490,8 +493,24 @@ function NowPlaying({ track, player, run, actions, onClose, onQueue }) {
         <button type="button" className={`m-icon mode ${repeat !== 'off' ? 'on' : ''}`} aria-label={`Repeat ${repeat}`}
           onClick={() => run('setRepeat', { mode: { off: 'all', all: 'one', one: 'off' }[repeat] })}>{repeat === 'one' ? <Repeat1 size={22} /> : <Repeat size={22} />}</button>
       </div>
-      <button type="button" className="m-queue-button" onClick={onQueue}><ListMusic size={18} /> Queue</button>
+      <div className="m-now-buttons">
+        <button type="button" className="m-queue-button" onClick={() => setLyricsOpen(true)}><MicVocal size={18} /> Lyrics</button>
+        <button type="button" className="m-queue-button" onClick={onQueue}><ListMusic size={18} /> Queue</button>
+      </div>
       {player?.error && <p className="error m-now-error">{player.error}</p>}
+      {lyricsOpen && (
+        <div className="m-lyrics">
+          <CoverGlow hash={track.art} />
+          <header>
+            <button type="button" className="m-icon" aria-label="Close lyrics" onClick={() => setLyricsOpen(false)}><ChevronDown size={28} /></button>
+            <div className="m-row-text"><strong>{track.title}</strong><small>{track.artist}</small></div>
+            <button type="button" className="m-icon" aria-label={player?.playing ? 'Pause' : 'Play'} onClick={() => run('toggle')}>
+              {player?.playing ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
+            </button>
+          </header>
+          <Lyrics track={track} player={player} onSeek={ms => run('seek', { ms })} className="phone-lyrics" />
+        </div>
+      )}
     </div>
   );
 }

@@ -47,3 +47,42 @@ test('songs sort by album order, name or date added, either way', () => {
   assert.deepEqual(ids(sortSongs(albums, 'added')), ['a', 'c', 'b']);
   assert.deepEqual(ids(sortSongs(albums, 'added', true)), ['b', 'c', 'a']);
 });
+
+test('timed lyrics parse in order, with offsets, repeats and word stamps', async () => {
+  const { parseLyrics, lineAt } = await import('../src/library.mjs');
+  const l = parseLyrics('[ti:Song]\n[by:SpotiFLAC (source: LRCLIB)]\n\n[00:33.57]Load up on guns\n[01:02.5][00:41.82]Chorus  line\n[00:45.00]\n[00:50.123]<00:50.12>Word <00:51.00>stamps\n');
+  assert.equal(l.timed, true);
+  assert.deepEqual(l.lines, [
+    { ms: 33570, text: 'Load up on guns' }, { ms: 41820, text: 'Chorus line' }, { ms: 45000, text: '' },
+    { ms: 50123, text: 'Word stamps' }, { ms: 62500, text: 'Chorus line' },
+  ]);
+  assert.deepEqual([lineAt(l.lines, 0), lineAt(l.lines, 33570), lineAt(l.lines, 44000), lineAt(l.lines, 99999)], [-1, 0, 1, 4]);
+  assert.equal(parseLyrics('[offset:+500]\n[00:10.00]Early')?.lines[0].ms, 9500);
+  // Enhanced LRC marks the singer; the mark isn't sung.
+  const v = parseLyrics('[00:08.299]v1:<00:08.299>This <00:08.658><00:08.658>world <00:09.039>\n[00:27.25]v2:Te la toco\n[00:30.00]bg:(ooh)');
+  assert.deepEqual(v.lines.map(l => l.text), ['This world', 'Te la toco', '(ooh)']);
+});
+
+test('plain lyrics keep their lines; empty lyrics are none', async () => {
+  const { parseLyrics } = await import('../src/library.mjs');
+  assert.deepEqual(parseLyrics('\nVerse one\n\nVerse two\n\n'), { timed: false, lines: [{ ms: null, text: 'Verse one' }, { ms: null, text: '' }, { ms: null, text: 'Verse two' }] });
+  assert.equal(parseLyrics('  \n'), null);
+  assert.equal(parseLyrics(null), null);
+});
+
+test('cover palettes: main colour first, a different hue next; greys stay grey', async () => {
+  const { pickPalette, defaultPalette } = await import('../src/palette.mjs');
+  const pixels = (...runs) => new Uint8ClampedArray(runs.flatMap(([n, rgb]) => Array.from({ length: n }, () => [...rgb, 255]).flat()));
+  const rgb = s => s.match(/\d+/g).map(Number);
+  // Mostly red with some blue, on black.
+  const [main, second] = pickPalette(pixels([300, [200, 30, 20]], [120, [20, 40, 210]], [400, [0, 0, 0]])).map(rgb);
+  assert.ok(main[0] > main[1] * 2 && main[0] > main[2] * 2, `reddish: ${main}`);
+  assert.ok(second[2] > second[0] * 2, `bluish: ${second}`);
+  // Behind white text: none of them light.
+  for (const c of pickPalette(pixels([500, [255, 240, 120]])).map(rgb)) assert.ok(Math.max(...c) < 200, `${c}`);
+  // A black-and-white cover gives greys.
+  for (const [r, g, b] of pickPalette(pixels([300, [250, 250, 250]], [300, [20, 20, 20]], [100, [128, 128, 128]])).map(rgb)) {
+    assert.ok(Math.max(r, g, b) - Math.min(r, g, b) < 20, `grey: ${[r, g, b]}`);
+  }
+  assert.deepEqual(pickPalette(new Uint8ClampedArray(0)), defaultPalette);
+});

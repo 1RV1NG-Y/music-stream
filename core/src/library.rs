@@ -347,6 +347,11 @@ impl Library {
         self.dir.join("art").join(hex(hash))
     }
 
+    /// A track's lyrics from its file or a `.lrc` next to it. Blocking.
+    pub fn lyrics(&self, id: &TrackId) -> Option<String> {
+        read_lyrics(&self.full_path(&self.track(id)?)?, true)
+    }
+
     /// Where a track's file is on this device.
     pub fn file_path(&self, track: &Track) -> Option<PathBuf> {
         self.full_path(track)
@@ -660,6 +665,33 @@ fn read_track(path: &Path, volume: &str, rel: &str, id: TrackId, dir: &Path, art
             album_peak: gain(lofty::tag::ItemKey::ReplayGainAlbumPeak),
         },
         art,
+    })
+}
+
+/// A file's lyrics: its lyrics tags, or with `sidecar`, also a same-named `.lrc` file. Timed
+/// (LRC) lyrics win over plain text, since they can follow the song.
+pub fn read_lyrics(path: &Path, sidecar: bool) -> Option<String> {
+    use lofty::{file::TaggedFileExt, tag::ItemKey};
+    let mut found: Vec<String> = vec![];
+    if let Ok(tagged) = lofty::probe::Probe::open(path).and_then(|p| p.guess_file_type().map_err(Into::into)).and_then(|p| p.read()) {
+        for tag in tagged.tags() {
+            for key in [ItemKey::Lyrics, ItemKey::UnsyncLyrics] {
+                found.extend(tag.get_strings(key).map(str::to_owned));
+            }
+        }
+    }
+    if sidecar && let Ok(text) = std::fs::read_to_string(path.with_extension("lrc")) {
+        found.push(text);
+    }
+    found.retain(|s| !s.trim().is_empty());
+    found.iter().find(|s| is_timed(s)).or(found.first()).cloned()
+}
+
+/// Whether lyrics carry LRC line times ("[01:23.45]").
+fn is_timed(text: &str) -> bool {
+    text.lines().any(|l| {
+        let b = l.trim_start().as_bytes();
+        b.len() > 6 && b[0] == b'[' && b[1].is_ascii_digit() && b[2].is_ascii_digit() && b[3] == b':'
     })
 }
 

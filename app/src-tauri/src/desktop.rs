@@ -312,6 +312,11 @@ struct Ids {
 }
 
 #[derive(Deserialize)]
+struct IdParam {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct Index1 {
     index: usize,
 }
@@ -355,7 +360,15 @@ pub async fn dispatch(app: &AppHandle, method: &str, p: Value) -> Result<Value> 
     if let Some(result) = crate::userdata::dispatch(&music.node, &index, |t| cached.contains(&(t.id, t.rev)), method, p.clone()).await {
         return result;
     }
+    if let Some(result) = crate::downloads::dispatch(app, method, &p).await {
+        return result;
+    }
     Ok(match method {
+        "lyrics" => {
+            let IdParam { id } = serde_json::from_value(p)?;
+            let track = music.tracks(&[id])?.remove(0);
+            json!({ "text": music.remote.lyrics(&track).await? })
+        }
         "remoteStatus" => serde_json::to_value(music.remote.status())?,
         "refresh" => {
             music.remote.refresh();
@@ -489,6 +502,8 @@ pub fn art_protocol<R: tauri::Runtime>(ctx: tauri::UriSchemeContext<'_, R>, requ
             Ok(Some(bytes)) => responder.respond(
                 tauri::http::Response::builder()
                     .header("Content-Type", "image/jpeg")
+                    // Lets a canvas read covers for their colours (palette.mjs).
+                    .header("Access-Control-Allow-Origin", "*")
                     .header("Cache-Control", "max-age=31536000, immutable")
                     .body(bytes)
                     .unwrap(),

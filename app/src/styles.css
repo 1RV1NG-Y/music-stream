@@ -439,7 +439,7 @@ input[type='checkbox'][role='switch']:disabled { opacity: 0.4; cursor: default; 
 .m-cover-xl { width: min(84vw, 46vh); aspect-ratio: 1; border-radius: 16px; box-shadow: 0 20px 60px rgb(255 122 26 / 0.12), var(--shadow); }
 .m-cover-lg svg, .m-cover-xl svg { width: 36%; height: auto; }
 
-.m-grid { list-style: none; margin: 0; padding: 4px 16px 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px 14px; }
+.m-grid { list-style: none; margin: 0; padding: 4px 16px 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 14px; }
 .m-grid button { width: 100%; padding: 0; border: none; background: none; display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left; border-radius: 10px; min-height: 0; }
 .m-grid button:hover:not(:disabled) { background: none; }
 .m-grid strong { margin-top: 6px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -489,3 +489,71 @@ input[type='checkbox'][role='switch']:disabled { opacity: 0.4; cursor: default; 
 .m-name h2 { font-size: 18px; padding: 0 6px; }
 .m-name input { min-height: 48px; font-size: 16px; }
 .m-name .m-play-row { padding: 0; }
+
+/* Lyrics (Lyrics.jsx): the current line bright, sung lines dimmed, lines to come faint. */
+.lyrics { overflow-y: auto; position: relative; scrollbar-width: none; overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(transparent, #000 12%, #000 80%, transparent); mask-image: linear-gradient(transparent, #000 12%, #000 80%, transparent); }
+.lyrics::-webkit-scrollbar { display: none; }
+.lyrics-lines { display: flex; flex-direction: column; gap: 0.15em; padding: 30vh 0 45vh; }
+.lyric { margin: 0; padding: 0.18em 0; font-weight: 750; line-height: 1.25; letter-spacing: -0.01em; color: rgb(255 255 255 / 0.3);
+  cursor: pointer; transition: color 0.35s ease, transform 0.35s ease, opacity 0.35s; transform-origin: left center; text-wrap: balance; }
+.lyric:hover { color: rgb(255 255 255 / 0.6); }
+.lyric.past { color: rgb(255 255 255 / 0.55); }
+.lyric.now { color: #fff; transform: scale(1.03); text-shadow: 0 0 28px rgb(255 255 255 / 0.25); }
+.lyric.gap { color: #fff; opacity: 0.4; }
+.lyric.now.gap { opacity: 1; }
+.lyric.plain { color: var(--text); cursor: default; font-weight: 650; }
+.lyrics-note { margin: 0; color: var(--muted); font-size: 16px; }
+.lyrics-note.small { font-size: 13px; margin-bottom: 18px; }
+@media (prefers-reduced-motion: reduce) { .lyric { transition: none; } .lyric.now { transform: none; } }
+
+.content.lyrics-mode { overflow: hidden; background: #000; }
+.lyrics-page { position: relative; height: 100%; display: flex; flex-direction: column; padding: 18px 32px 0; overflow: hidden; }
+.lyrics-page > :not(.glow), .m-lyrics > :not(.glow) { position: relative; z-index: 1; }
+
+/* The cover's colours behind the lyrics: three soft blobs drifting slowly, fading to the next
+   song's colours. Radial gradients of currentColor, so a colour change is a cheap transition. */
+.glow { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; background: #000; }
+.glow span { position: absolute; width: 90vmax; height: 90vmax; border-radius: 50%; opacity: 0.85;
+  background: radial-gradient(closest-side, currentColor, transparent); transition: color 1.6s ease;
+  animation: glow-drift 34s ease-in-out infinite alternate; will-change: transform; }
+.glow span:nth-child(1) { top: -45vmax; left: -30vmax; }
+.glow span:nth-child(2) { top: -20vmax; right: -50vmax; animation-duration: 41s; animation-delay: -12s; }
+.glow span:nth-child(3) { bottom: -40vmax; left: -25vmax; animation-duration: 47s; animation-delay: -25s; }
+.glow::after { content: ''; position: absolute; inset: 0; background: linear-gradient(rgb(0 0 0 / 0.15), rgb(0 0 0 / 0.3) 50%, rgb(0 0 0 / 0.5)); }
+@keyframes glow-drift {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(12vmax, 8vmax) scale(1.15); }
+  100% { transform: translate(-8vmax, 14vmax) scale(0.95); }
+}
+@media (prefers-reduced-motion: reduce) { .glow span { animation: none; } }
+.lyrics-head { display: flex; align-items: center; gap: 12px; }
+.lyrics-title { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.lyrics-title strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lyrics-title small { color: var(--muted); }
+.desktop-lyrics { flex: 1; min-height: 0; max-width: 820px; width: 100%; margin: 0 auto; }
+.desktop-lyrics .lyric { font-size: clamp(24px, 2.6vw, 34px); }
+
+.m-now-buttons { display: flex; justify-content: center; gap: 28px; }
+.m-lyrics { position: fixed; inset: 0; z-index: 35; display: flex; flex-direction: column; padding: 8px 22px 0;
+  overflow: hidden; background: #000; animation: m-up 0.2s ease; }
+.m-lyrics header { display: flex; align-items: center; gap: 10px; margin: 0 -10px; }
+.m-lyrics header .m-row-text { flex: 1; min-width: 0; }
+.phone-lyrics { flex: 1; min-height: 0; }
+.phone-lyrics .lyric { font-size: 25px; }
+.phone-lyrics .lyrics-lines { padding: 22vh 0 40vh; }
+
+/* Songs being saved onto this PC. */
+.downloads { position: fixed; right: 18px; bottom: calc(var(--player-h) + 14px); z-index: 40; width: min(360px, calc(100vw - 36px));
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--surface-3);
+  border-radius: 14px; box-shadow: var(--shadow); }
+.downloads-row { display: flex; align-items: center; gap: 10px; }
+.downloads-row strong { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; }
+.downloads .accent { color: var(--accent); flex: none; }
+.downloads .ok { color: var(--ok); flex: none; }
+.downloads .danger { color: var(--danger); flex: none; }
+.downloads-bar { height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.downloads-bar span { display: block; height: 100%; background: var(--accent); transition: width 0.25s; }
+.downloads-now, .downloads-failed { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.downloads-failed { white-space: normal; display: flex; gap: 8px; flex-wrap: wrap; }
+.downloads > button.small { align-self: flex-start; }

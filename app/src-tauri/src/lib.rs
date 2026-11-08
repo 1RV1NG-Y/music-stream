@@ -10,6 +10,8 @@ mod background;
 #[cfg(desktop)]
 mod desktop;
 #[cfg(desktop)]
+mod downloads;
+#[cfg(desktop)]
 mod media;
 #[cfg(any(target_os = "android", test))]
 mod node_slot;
@@ -140,7 +142,8 @@ pub fn run() {
                     tracing::error!("the player could not start: {e:#}");
                 }
                 background::setup(app.handle(), node.clone())?;
-                if app.try_state::<desktop::Music>().is_some() {
+                if let Some(music) = app.try_state::<desktop::Music>() {
+                    downloads::setup(app.handle(), music.remote.clone());
                     media::start(app.handle());
                 }
             }

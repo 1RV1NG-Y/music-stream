@@ -15,6 +15,7 @@ use crate::{
 
 const MAX_INDEX: u64 = 256 * 1024 * 1024;
 const MAX_ART: u64 = 16 * 1024 * 1024;
+const MAX_LYRICS: u64 = 1024 * 1024;
 /// How often the library is rescanned without a reason (change notifications come later).
 const RESCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -141,6 +142,16 @@ impl Node {
                 Err(_) => proto::write_msg(&mut send, &StreamResp::Missing).await?,
             },
             StreamReq::Read { track, rev, start, end } => self.serve_read(&library, &mut send, track, rev, start, end).await?,
+            StreamReq::Lyrics { track } => {
+                let lib = library.clone();
+                match tokio::task::spawn_blocking(move || lib.lyrics(&track)).await? {
+                    Some(text) => {
+                        proto::write_msg(&mut send, &StreamResp::Have { len: text.len() as u64 }).await?;
+                        send.write_all(text.as_bytes()).await?;
+                    }
+                    None => proto::write_msg(&mut send, &StreamResp::Missing).await?,
+                }
+            }
         }
         send.finish()?;
         let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
@@ -244,6 +255,20 @@ impl Node {
                 let mut bytes = vec![0; len as usize];
                 recv.read_exact(&mut bytes).await?;
                 Ok(Some(bytes))
+            }
+            StreamResp::Missing => Ok(None),
+            StreamResp::Refused { reason } => bail!(reason),
+            other => bail!("unexpected answer {other:?}"),
+        }
+    }
+
+    pub async fn fetch_lyrics(&self, track: [u8; 16]) -> Result<Option<String>> {
+        let (_send, mut recv) = self.request(&StreamReq::Lyrics { track }).await?;
+        match proto::read_msg::<_, StreamResp>(&mut recv).await?.context("no answer")? {
+            StreamResp::Have { len } if len <= MAX_LYRICS => {
+                let mut bytes = vec![0; len as usize];
+                recv.read_exact(&mut bytes).await?;
+                Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
             }
             StreamResp::Missing => Ok(None),
             StreamResp::Refused { reason } => bail!(reason),

@@ -3,7 +3,8 @@
 Read `PLAN.md` first (the agreed design; §8 is the work plan, §12 the review log). This file
 says what is done, what is verified, and exactly what is left, so work can resume from here.
 
-Last updated: 2026-11-07: Opus support (below). The user has used the desktop, phone-player and
+Last updated: 2026-11-08: downloads to the PC and synced lyrics (below); visualizer designs
+in `design/visualizers.html` await polish. 2026-11-07: Opus support. The user has used the desktop, phone-player and
 hiding builds since 2026-10-30 on Linux, Windows (their own build) and the S22: all works as
 expected.
 
@@ -96,6 +97,42 @@ real songs are unaffected.
 
 Still to come: naming the 2 unreadable files.
 
+## Downloads and lyrics (2026-11-08)
+
+| Piece | Where | Verified by |
+|---|---|---|
+| Lyrics from the phone: a new `Lyrics` stream request answers a track's lyrics tags (`LYRICS`, `UNSYNCEDLYRICS`) or a same-named `.lrc`; timed (LRC) beats plain. The PC caches answers and, with the phone away, reads the cached file's tags | `core/src/library.rs` (`read_lyrics`), `node/stream.rs`, `remote.rs` | `core/tests/stream.rs` `the_pc_gets_lyrics_and_saves_tracks`: timed over unsynced, sidecar `.lrc`, none |
+| **Download to this PC:** a background queue, one song at a time, into `<Music>/music-stream/<album artist>/<album>/<file>`; a same-size file there counts as saved, otherwise ` (2)`; written to `.part` then renamed; a 30 s stall or Cancel stops it and leaves nothing | `remote.rs` (`save_track`), `app/src-tauri/src/downloads.rs` | same test: byte-exact save; a cancelled save leaves no file; `safe_name` test (Windows-invalid characters) |
+| Desktop UI: "Download to this PC" in the song menu (one or many), Download buttons on album and playlist pages, a downloads card (progress, Cancel, Show in folder, Try again for failures) | `app/src/Desktop.jsx` | builds; not yet tried by the user |
+| Lyrics view, Spotify-style: the current line lit and kept a third of the way down (the user scrolling pauses that for 3 s), past lines dimmed, tap a line to seek, ♪ for instrumental gaps; plain lyrics just scroll. Desktop: microphone button in the player bar (`Y`); phone: Lyrics button on Now Playing (Back closes it) | `app/src/Lyrics.jsx`, `library.mjs` (`parseLyrics`, `lineAt`) | `npm test` (offsets, several stamps per line, word stamps); the parser over all 168 cached songs: 105 timed, 5 plain, 58 none, nothing left unparsed |
+
+Downloads are desktop-only (the phone already has the files).
+
+**Same day, from the user's first use:**
+- **Player thread crash (fixed):** with shuffle on, playing an album after a longer queue
+  panicked the player (the old queue's output marks were remapped into the new, shorter one:
+  index out of bounds), and every later call failed on the poisoned lock, so the desktop went
+  silent with no error. Marks are now dropped with the old queue. Test:
+  `a_shorter_queue_while_shuffled_keeps_the_player_alive` (failed before the fix with the same
+  panic as the user's log).
+- Enhanced-LRC singer marks (`v1:`, `v2:`, `bg:`; 596 lines in the cached songs) no longer show.
+- Phone album grid: one long title widened its column past the screen (`1fr` won't shrink
+  below the nowrap title); now `minmax(0, 1fr)`.
+- **Cover colours behind the lyrics** (desktop and phone): three soft blobs in the cover's
+  colours drift slowly and fade to the next song's (`palette.mjs`: hue buckets weighted by
+  chroma; each colour capped at luminance 0.16 so white text keeps ≥ 5:1 contrast; grey covers
+  give greys). Covers now carry `Access-Control-Allow-Origin` so a canvas can read them.
+  `npm test` covers the picker; reusable as `<CoverGlow>` for other views later.
+- **Covers going blank in the player bar (fixed):** a cover that once failed to load (the
+  phone busy or restarting) stayed a placeholder for every later song, since the player bar's
+  image stays mounted. `useArt` (api.mjs) forgets failures when the cover changes and retries
+  once after 4 s; failed palettes aren't cached either.
+
+**Visualizers (on hold):** seven design studies in `design/visualizers.html` (not committed):
+Silk, Aero, Side Bars, Horizon, Phosphor, Halo, Ribbon; voice = centred, pitched energy in
+500–4000 Hz, drawn as Horizon's thin waveform line. The user wants more polish before
+committing, then the real widget.
+
 U1 cut-downs (as PLAN §8 says): whole-track cache instead of segment files; folder walk instead
 of MediaStore notifications (rescan every 5 min, on start, and on "Scan again"); no playlists,
 favorites, shuffle or repeat yet; no OS media keys yet.
@@ -161,10 +198,7 @@ whether the 5 Ogg files are Vorbis or Opus. (They were Opus; supported since 202
 
 ## Known gaps / notes for whoever continues
 
-- `cargo clippy` isn't installed for the stable toolchain on this PC (`rustup component add
-  clippy`).
-- No Windows CI yet; copy reader-sync's `.github/workflows/windows.yml` together with the
-  app shell.
+- Windows builds and releases: `.github/workflows` (the user's PR #1).
 - User preferences: no title bars on Linux apps (window controls in the app's own header);
   OLED black with orange accents; don't re-propose settled decisions; keep this file current
   after each step. Astra reviews progress against PLAN and this file.
