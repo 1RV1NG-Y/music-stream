@@ -15,14 +15,26 @@ Status: under active development. See [STATUS.md](STATUS.md) for what works toda
 
 - **Phone (Android):** scans its music folders, reads tags and cover art, and serves the
   library in the background (a foreground service, so it keeps serving with the screen off).
-- **PC (Linux, Windows):** albums with cover art, album pages, artists, songs, search, a
-  queue (play next, add, reorder, remove), seek and volume. The queue and position come back
-  after a restart, paused.
-- **Native playback:** FLAC, MP3, AAC/ALAC, Vorbis and WAV, decoded with
-  [symphonia](https://github.com/pdeljanov/Symphonia). Output via
+  It's also a full player of its own: lock screen and notification controls, headset and
+  Bluetooth buttons, Now Playing with the queue, and the same library views as the PC.
+- **PC (Linux, Windows):** songs, playlists, albums, artists and search; a queue panel
+  (play next, add, drag to reorder, remove), shuffle and repeat, seek and volume. The queue
+  and position come back after a restart, paused. Media keys and the system's now-playing
+  controls (MPRIS on Linux). Keyboard shortcuts (`?` lists them).
+- **Your library, synced:** playlists, liked songs and play history, kept in step between
+  the phone and every PC. Automatic playlists: On Repeat, Recently played, Recently added,
+  Most played. Hide songs or whole folders you don't want in the library.
+- **Lyrics:** a song's own lyrics (its tags or a matching `.lrc` file). Timed lyrics follow
+  the song line by line, and a tap on a line jumps there; the background takes its colours
+  from the album cover.
+- **Download to the PC:** save songs, albums or playlists from the phone into your Music
+  folder (`music-stream/<artist>/<album>/`), in the background.
+- **Native playback:** FLAC, MP3, AAC/ALAC, Vorbis, Opus and WAV, decoded with
+  [symphonia](https://github.com/pdeljanov/Symphonia) (Opus with libopus). Output via
   [cpal](https://github.com/RustAudio/cpal), with resampling to the device's rate
   ([rubato](https://github.com/HEnquist/rubato)), channel mapping, gapless playback and
-  ReplayGain (album or track). Playback keeps going with the window closed (tray icon).
+  ReplayGain (album or track; Opus R128 gains too). Playback keeps going with the window
+  closed (tray icon).
 - **Streaming and cache:** tracks are fetched from the playhead on, and the next track is
   fetched ahead. Played tracks are cached (4 GB by default), so they also play without the
   phone. Every read names the file revision it expects, so a file changed on the phone is
@@ -34,16 +46,19 @@ Status: under active development. See [STATUS.md](STATUS.md) for what works toda
 - OLED black with orange accents. On Linux the app draws its own window controls (no system
   title bar).
 
-Not yet: shuffle and repeat, media keys, playlists and favorites, Opus files (see
-[STATUS.md](STATUS.md)).
-
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `core/` | `musicstream-core`: identity, pairing, discovery, the replicated document and durable storage (forked from [reader-sync](https://github.com/1RV1NG-Y/reader-sync)); the phone's library scan and index; the stream protocol; the PC's index, art and track cache. |
-| `player/` | Native playback: decode thread, resampler and lock-free ring feeding the audio callback; queue, seek, gapless. |
+| `core/` | `musicstream-core`: identity, pairing, discovery, the replicated document and durable storage (forked from [reader-sync](https://github.com/1RV1NG-Y/reader-sync)); the phone's library scan, index and lyrics; the stream protocol; the PC's index, art and track cache; playlists, likes and history. |
+| `player/` | Native playback: decode thread, resampler and lock-free ring feeding the audio callback; queue, shuffle, repeat, seek, gapless; the Opus decoder. |
 | `app/` | The app: React + Vite UI, Tauri v2 shell for Linux, Windows and Android (`app/src-tauri`). |
+
+## Get it
+
+Windows: every push to `main` builds `music-stream.exe`, published under
+[Releases](https://github.com/1RV1NG-Y/music-stream/releases). Linux and Android: build from
+source as below.
 
 ## Build and test
 
