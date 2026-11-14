@@ -1,7 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#000"/>
-  <!-- A phone-to-PC stream: two arcs of signal around a note. -->
-  <path d="M154 150a150 150 0 0 0 0 212M358 150a150 150 0 0 1 0 212" fill="none" stroke="#ff7a1a" stroke-width="22" stroke-linecap="round" opacity=".45"/>
-  <path d="M196 192a92 92 0 0 0 0 128M316 192a92 92 0 0 1 0 128" fill="none" stroke="#ff7a1a" stroke-width="22" stroke-linecap="round" opacity=".75"/>
-  <path d="M276 168v126a38 38 0 1 1-24-35.3V182l64-14v30z" fill="#ff7a1a"/>
+  <rect width="512" height="512" rx="112" fill="#ff7a1a"/>
+  <!-- A stream of music: a note sending out signal on both sides. -->
+  <g fill="none" stroke="#120700" stroke-width="24" stroke-linecap="round">
+    <path d="M162 182a120 120 0 0 0 0 148M350 182a120 120 0 0 1 0 148" opacity=".55"/>
+    <path d="M120 140a178 178 0 0 0 0 232M392 140a178 178 0 0 1 0 232" opacity=".28"/>
+  </g>
+  <g fill="#120700" transform="translate(256 256) scale(1.08) translate(-265 -256)">
+    <ellipse cx="236" cy="318" rx="44" ry="34" transform="rotate(-24 236 318)"/>
+    <rect x="258" y="160" width="22" height="160" rx="4"/>
+    <path d="M269 160h11c0 30 14 44 30 58 16 14 28 32 28 58 0 16-4 30-12 42 2-30-8-52-26-64-10-7-20-10-31-11z"/>
+  </g>
 </svg>
